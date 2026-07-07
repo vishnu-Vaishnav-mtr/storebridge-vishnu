@@ -23,7 +23,7 @@ export default async function TeamPage() {
         <CardHeader
           title="Workspace roles"
           action={
-            <Button>
+            <Button disabled title="Team invitations are not enabled in this deployment.">
               <UserPlus className="h-4 w-4" /> Invite member
             </Button>
           }

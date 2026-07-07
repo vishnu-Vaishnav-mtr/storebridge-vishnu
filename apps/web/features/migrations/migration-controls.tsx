@@ -1,34 +1,47 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Pause, Play, RotateCcw, ShieldCheck } from "lucide-react";
+import { Pause, Play, RotateCcw, ShieldCheck, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function MigrationControls({ migrationId }: { migrationId: string }) {
   const [message, setMessage] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<string | null>(null);
+  const [isError, setIsError] = useState(false);
 
   async function control(
     action:
-      "start" | "pause" | "resume" | "retry-failed" | "verify" | "dry-run",
+      | "start"
+      | "pause"
+      | "resume"
+      | "cancel"
+      | "retry-failed"
+      | "verify"
+      | "dry-run",
   ) {
+    setIsLoading(action);
+    setIsError(false);
     const response = await fetch("/api/migrations/control", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ migrationId, action }),
     });
     const payload = (await response.json()) as { message: string };
+    setIsError(!response.ok);
     setMessage(payload.message);
+    setIsLoading(null);
   }
 
   return (
     <div className="grid gap-3">
       <div className="flex flex-wrap gap-3">
-        <Button type="button" onClick={() => void control("start")}>
+        <Button type="button" disabled={isLoading !== null} onClick={() => void control("start")}>
           <Play className="h-4 w-4" /> Start
         </Button>
         <Button
           type="button"
           variant="secondary"
+          disabled={isLoading !== null}
           onClick={() => void control("pause")}
         >
           <Pause className="h-4 w-4" /> Pause
@@ -36,6 +49,7 @@ export function MigrationControls({ migrationId }: { migrationId: string }) {
         <Button
           type="button"
           variant="secondary"
+          disabled={isLoading !== null}
           onClick={() => void control("resume")}
         >
           <Play className="h-4 w-4" /> Resume
@@ -43,6 +57,7 @@ export function MigrationControls({ migrationId }: { migrationId: string }) {
         <Button
           type="button"
           variant="secondary"
+          disabled={isLoading !== null}
           onClick={() => void control("retry-failed")}
         >
           <RotateCcw className="h-4 w-4" /> Retry failed
@@ -50,13 +65,28 @@ export function MigrationControls({ migrationId }: { migrationId: string }) {
         <Button
           type="button"
           variant="ghost"
+          disabled={isLoading !== null}
           onClick={() => void control("verify")}
         >
           <ShieldCheck className="h-4 w-4" /> Verify
         </Button>
+        <Button
+          type="button"
+          variant="danger"
+          disabled={isLoading !== null}
+          onClick={() => void control("cancel")}
+        >
+          <XCircle className="h-4 w-4" /> Cancel
+        </Button>
       </div>
       {message ? (
-        <p className="rounded-xl border border-green/30 bg-green/10 p-3 text-sm text-green">
+        <p
+          className={`rounded-xl border p-3 text-sm ${
+            isError
+              ? "border-danger/30 bg-danger/10 text-red-100"
+              : "border-green/30 bg-green/10 text-green"
+          }`}
+        >
           {message}
         </p>
       ) : null}

@@ -149,8 +149,14 @@ export function ShopifyConnectionForm() {
             label="Shop domain"
             placeholder="your-store.myshopify.com"
           />
-          <Button type="button" variant="secondary" className="self-end">
-            <ExternalLink className="h-4 w-4" /> Connect Shopify
+          <Button
+            type="button"
+            variant="secondary"
+            className="self-end opacity-60"
+            disabled
+            title="Shopify OAuth is not configured for this deployment. Use a custom app token."
+          >
+            <ExternalLink className="h-4 w-4" /> OAuth unavailable
           </Button>
         </div>
       </div>
@@ -244,15 +250,64 @@ function Actions({
       >
         <Save className="h-4 w-4" /> Save Connection
       </Button>
-      <Button type="button" variant="ghost">
-        Disconnect
-      </Button>
-      <Button type="button" variant="ghost">
-        <KeyRound className="h-4 w-4" /> Edit Credentials
+      <Button type="button" variant="ghost" disabled title="Use Save Connection to replace credentials.">
+        <KeyRound className="h-4 w-4" /> Replace via Save
       </Button>
       <Button type="submit" variant="ghost">
         Recheck Permissions
       </Button>
+    </div>
+  );
+}
+
+export function StoredConnectionActions({ connectionId }: { connectionId: string }) {
+  const [message, setMessage] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  async function run(action: "recheck" | "disconnect") {
+    setIsLoading(true);
+    setMessage(null);
+    const response = await fetch(`/api/connections/${connectionId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const payload = (await response.json()) as {
+      ok?: boolean;
+      status?: string;
+      error?: string;
+      missingPermissions?: string[];
+    };
+    setMessage(
+      payload.error ??
+        (payload.missingPermissions?.length
+          ? `Missing scopes: ${payload.missingPermissions.join(", ")}`
+          : `Status: ${payload.status ?? "updated"}`),
+    );
+    setIsLoading(false);
+  }
+
+  return (
+    <div className="mt-4 grid gap-2">
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={isLoading}
+          onClick={() => void run("recheck")}
+        >
+          Recheck
+        </Button>
+        <Button
+          type="button"
+          variant="danger"
+          disabled={isLoading}
+          onClick={() => void run("disconnect")}
+        >
+          Disconnect
+        </Button>
+      </div>
+      {message ? <p className="text-sm text-muted">{message}</p> : null}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import type { Prisma } from "@storebridge/database";
 import { prisma } from "@storebridge/database";
 import { z } from "zod";
 import { recheckStoreConnection } from "@/lib/connection-checks";
@@ -22,6 +23,63 @@ const startAuditSchema = z.object({
 const moduleSelectionSchema = z.object({
   migrationId: z.string().min(1),
   modules: z.array(z.enum(supportedMigrationModules)).min(1),
+});
+
+const mappingRuleSchema = z.object({
+  migrationId: z.string().min(1),
+  rules: z
+    .array(
+      z.object({
+        ruleType: z.enum([
+          "CATEGORY",
+          "ATTRIBUTE",
+          "CUSTOM_FIELD",
+          "WORDPRESS_PAGE",
+          "WORDPRESS_POST",
+          "WORDPRESS_CATEGORY",
+          "ORDER_STATUS",
+          "UNSUPPORTED_DATA",
+        ]),
+        sourceKey: z.string().trim().min(1).max(200),
+        targetKey: z.string().trim().max(200).optional(),
+        action: z.enum([
+          "COLLECTION",
+          "OPTION",
+          "METAFIELD",
+          "TAG",
+          "PAGE",
+          "BLOG_ARTICLE",
+          "ORDER_METADATA",
+          "REPORT_UNSUPPORTED",
+          "SKIP",
+        ]),
+      }),
+    )
+    .min(1),
+});
+
+const warningDecisionSchema = z.object({
+  migrationId: z.string().min(1),
+  sourceKey: z.string().min(1),
+  action: z.enum([
+    "RESOLVE",
+    "APPLY_SUGGESTED_MAPPING",
+    "SKIP_RECORD",
+    "INCLUDE_RECORD",
+  ]),
+});
+
+const migrationJobSchema = z.object({
+  migrationId: z.string().min(1),
+  action: z.enum([
+    "dry-run",
+    "start",
+    "pause",
+    "resume",
+    "cancel",
+    "retry-failed",
+    "verify",
+  ]),
 });
 
 export async function updateMigrationStoresAction(formData: FormData) {
@@ -222,10 +280,230 @@ export async function updateMigrationModulesAction(formData: FormData) {
   redirect(wizardUrl(input.migrationId, null, "Data selection saved."));
 }
 
+export async function saveMappingRulesAction(formData: FormData) {
+  const membership = await requireCurrentMembership();
+  const migrationId = String(formData.get("migrationId") ?? "");
+  const ruleCount = Number(formData.get("ruleCount") ?? 0);
+  const rules = Array.from({ length: ruleCount }, (_, index) => ({
+    ruleType: formData.get(`rules.${index}.ruleType`),
+    sourceKey: formData.get(`rules.${index}.sourceKey`),
+    targetKey: formData.get(`rules.${index}.targetKey`) || undefined,
+    action: formData.get(`rules.${index}.action`),
+  }));
+  const input = mappingRuleSchema.parse({ migrationId, rules });
+  const migration = await prisma.migration.findFirst({
+    where: { id: input.migrationId, organisationId: membership.organisationId },
+    select: { id: true, currentStep: true, status: true },
+  });
+  if (!migration) redirect("/migrations");
+  if (!["READY", "DRAFT"].includes(migration.status)) {
+    redirect(wizardUrl(input.migrationId, "Invalid migration state."));
+  }
+
+  await prisma.$transaction([
+    prisma.mappingRule.deleteMany({
+      where: {
+        migrationId: input.migrationId,
+        ruleType: {
+          in: [
+            "CATEGORY",
+            "ATTRIBUTE",
+            "CUSTOM_FIELD",
+            "WORDPRESS_PAGE",
+            "WORDPRESS_POST",
+            "WORDPRESS_CATEGORY",
+            "ORDER_STATUS",
+            "UNSUPPORTED_DATA",
+          ],
+        },
+      },
+    }),
+    ...input.rules.map((rule) =>
+      prisma.mappingRule.create({
+        data: {
+          migrationId: input.migrationId,
+          ruleType: rule.ruleType,
+          sourceKey: rule.sourceKey,
+          targetKey: rule.targetKey ?? null,
+          action: rule.action,
+          options: suggestedOptions(rule) as Prisma.InputJsonObject,
+        },
+      }),
+    ),
+    prisma.migration.update({
+      where: { id: input.migrationId },
+      data: { currentStep: Math.max(migration.currentStep, 5) },
+    }),
+  ]);
+
+  redirect(wizardUrl(input.migrationId, null, "Mapping rules saved."));
+}
+
+export async function resetMappingRulesAction(formData: FormData) {
+  const membership = await requireCurrentMembership();
+  const migrationId = String(formData.get("migrationId") ?? "");
+  const migration = await prisma.migration.findFirst({
+    where: { id: migrationId, organisationId: membership.organisationId },
+    select: { id: true },
+  });
+  if (!migration) redirect("/migrations");
+  await prisma.mappingRule.deleteMany({
+    where: {
+      migrationId,
+      ruleType: {
+        in: [
+          "CATEGORY",
+          "ATTRIBUTE",
+          "CUSTOM_FIELD",
+          "WORDPRESS_PAGE",
+          "WORDPRESS_POST",
+          "WORDPRESS_CATEGORY",
+          "ORDER_STATUS",
+          "UNSUPPORTED_DATA",
+        ],
+      },
+    },
+  });
+  redirect(wizardUrl(migrationId, null, "Mapping rules reset."));
+}
+
+export async function warningDecisionAction(formData: FormData) {
+  const membership = await requireCurrentMembership();
+  const input = warningDecisionSchema.parse({
+    migrationId: formData.get("migrationId"),
+    sourceKey: formData.get("sourceKey"),
+    action: formData.get("action"),
+  });
+  const migration = await prisma.migration.findFirst({
+    where: { id: input.migrationId, organisationId: membership.organisationId },
+    select: { id: true, currentStep: true },
+  });
+  if (!migration) redirect("/migrations");
+  await prisma.mappingRule.create({
+    data: {
+      migrationId: input.migrationId,
+      ruleType: "WARNING_RESOLUTION",
+      sourceKey: input.sourceKey,
+      action: input.action,
+      options: { decidedAt: new Date().toISOString() },
+    },
+  });
+  await prisma.migration.update({
+    where: { id: input.migrationId },
+    data: { currentStep: Math.max(migration.currentStep, 6) },
+  });
+  redirect(wizardUrl(input.migrationId, null, "Warning decision saved."));
+}
+
+export async function runMigrationJobAction(formData: FormData) {
+  const membership = await requireCurrentMembership();
+  const input = migrationJobSchema.parse({
+    migrationId: formData.get("migrationId"),
+    action: formData.get("action"),
+  });
+  const migration = await prisma.migration.findFirst({
+    where: { id: input.migrationId, organisationId: membership.organisationId },
+    include: { sourceConnection: true, targetConnection: true },
+  });
+  if (!migration) redirect("/migrations");
+
+  if (input.action === "dry-run") {
+    const blocking = await hasBlockingIssues(input.migrationId);
+    if (blocking) {
+      redirect(
+        wizardUrl(
+          input.migrationId,
+          "Blocking issues must be resolved before dry run.",
+        ),
+      );
+    }
+  }
+
+  if (["dry-run", "start"].includes(input.action)) {
+    if (!isUsableConnection(migration.sourceConnection)) {
+      redirect(wizardUrl(input.migrationId, "Disconnected source store."));
+    }
+    if (!isUsableConnection(migration.targetConnection)) {
+      redirect(wizardUrl(input.migrationId, "Disconnected destination store."));
+    }
+    const worker = await checkWorkerHealth();
+    if (worker.status === "Offline") {
+      redirect(wizardUrl(input.migrationId, "Worker offline. Start the migration worker first."));
+    }
+  }
+
+  if (input.action === "cancel") {
+    await prisma.migration.update({
+      where: { id: input.migrationId },
+      data: { status: "CANCELLED" },
+    });
+    redirect(wizardUrl(input.migrationId, null, "Migration cancelled."));
+  }
+
+  try {
+    await enqueueMigrationJob(input.action, input.migrationId);
+  } catch {
+    redirect(wizardUrl(input.migrationId, "Redis queue failure. Job was not queued."));
+  }
+
+  const statusByAction = {
+    "dry-run": "DRY_RUNNING",
+    start: "QUEUED",
+    pause: "PAUSING",
+    resume: "RESUMING",
+    "retry-failed": migration.status,
+    verify: "VERIFYING",
+  } as const;
+  const nextStatus = statusByAction[input.action as keyof typeof statusByAction];
+  if (nextStatus) {
+    await prisma.migration.update({
+      where: { id: input.migrationId },
+      data: {
+        status: nextStatus,
+        currentStep:
+          input.action === "dry-run"
+            ? 6
+            : input.action === "start"
+              ? 7
+              : input.action === "verify"
+                ? 8
+                : migration.currentStep,
+      },
+    });
+  }
+
+  redirect(wizardUrl(input.migrationId, null, `${input.action} queued.`));
+}
+
 function wizardUrl(migrationId: string, error?: string | null, success?: string) {
   const params = new URLSearchParams();
   if (error) params.set("error", error);
   if (success) params.set("success", success);
   const query = params.toString();
   return `/migrations/${migrationId}/setup${query ? `?${query}` : ""}`;
+}
+
+async function hasBlockingIssues(migrationId: string) {
+  const unresolvedErrors = await prisma.migrationError.count({
+    where: {
+      migrationId,
+      resolvedAt: null,
+      category: { in: ["VALIDATION", "AUTHENTICATION", "PERMISSION", "MAPPING"] },
+    },
+  });
+  return unresolvedErrors > 0;
+}
+
+function suggestedOptions(rule: {
+  ruleType: string;
+  sourceKey: string;
+  action: string;
+  targetKey?: string | undefined;
+}) {
+  return {
+    suggested: true,
+    sourceKey: rule.sourceKey,
+    targetKey: rule.targetKey ?? null,
+    action: rule.action,
+  };
 }

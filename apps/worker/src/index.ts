@@ -3,7 +3,11 @@ import { prisma } from "@storebridge/database";
 import { logger } from "@storebridge/logger";
 import { processMigrationJob } from "./processors/migration-processor";
 
-const redisUrl = new URL(process.env.REDIS_URL ?? "redis://localhost:6379");
+if (!process.env.REDIS_URL) {
+  throw new Error("REDIS_URL is required for the migration worker.");
+}
+
+const redisUrl = new URL(process.env.REDIS_URL);
 const connection = {
   host: redisUrl.hostname,
   port: Number(redisUrl.port || 6379),

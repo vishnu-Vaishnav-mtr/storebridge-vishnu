@@ -48,7 +48,12 @@ export default async function SettingsPage() {
             value="Available per store"
             icon={Lock}
           />
-          <Button variant="danger" className="mt-4">
+          <Button
+            variant="danger"
+            className="mt-4 opacity-60"
+            disabled
+            title="Workspace deletion requires a dedicated confirmation flow."
+          >
             <Trash2 className="h-4 w-4" /> Delete workspace data
           </Button>
         </Card>
@@ -59,6 +64,9 @@ export default async function SettingsPage() {
             {["Dark", "Light", "System"].map((mode) => (
               <button
                 key={mode}
+                type="button"
+                disabled
+                title="Theme selection is not configurable yet."
                 className="focus-ring rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm"
               >
                 {mode}

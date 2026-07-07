@@ -5,6 +5,7 @@ import { Card, CardHeader } from "@/components/ui/card";
 import {
   WooConnectionForm,
   ShopifyConnectionForm,
+  StoredConnectionActions,
 } from "@/features/stores/connection-forms";
 import { getWorkspaceData } from "@/lib/data";
 
@@ -54,6 +55,7 @@ export default async function StoresPage() {
                       : "Not checked yet"}
                   </p>
                 </div>
+                <StoredConnectionActions connectionId={connection.id} />
               </div>
               <StatusBadge status={connection.status} />
             </div>

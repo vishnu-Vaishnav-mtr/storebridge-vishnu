@@ -1,4 +1,9 @@
-import type { EntityType, ErrorCategory, Prisma } from "@storebridge/database";
+import type {
+  EntityType,
+  ErrorCategory,
+  MappingRule,
+  Prisma,
+} from "@storebridge/database";
 import { prisma } from "@storebridge/database";
 import { buildReconciliation, isRetryable } from "@storebridge/migration-core";
 import { ShopifyAdapter } from "@storebridge/shopify-adapter";
@@ -116,6 +121,7 @@ type MigrationStore = {
   }): Promise<void>;
   shouldPause(): Promise<boolean>;
   pause(): Promise<void>;
+  mappingRules?(): Promise<MappingRule[]>;
 };
 
 type UpsertRecordInput = {
@@ -128,7 +134,8 @@ type UpsertRecordInput = {
     | "DUPLICATE_PREVENTED"
     | "CREATED"
     | "UPDATED"
-    | "FAILED";
+    | "FAILED"
+    | "SKIPPED";
   normalizedData: unknown;
   destinationGid?: string;
 };
@@ -249,6 +256,9 @@ export async function runMigrationPipeline(input: {
     shopify: input.shopify,
     findMapping: input.store.findMapping,
   };
+  const mappingRules = input.store.mappingRules
+    ? await input.store.mappingRules()
+    : [];
 
   for (const definition of input.definitions) {
     const checkpoint = await input.store.checkpoint(definition.entityType);
@@ -256,6 +266,24 @@ export async function runMigrationPipeline(input: {
     for await (const source of definition.records()) {
       seen += 1;
       const sourceId = definition.sourceId(source.normalized);
+      if (shouldSkipByMapping(mappingRules, definition.entityType, sourceId)) {
+        await input.store.upsertRecord({
+          entityType: definition.entityType,
+          sourceId,
+          sourceHash: source.hash,
+          displayName: definition.displayName(source.normalized),
+          status: "SKIPPED",
+          normalizedData: source.normalized,
+        });
+        await input.store.updateMigrationCounters({ processed: 1 });
+        await input.store.saveCheckpoint({
+          entityType: definition.entityType,
+          processed: seen,
+          lastSourceId: sourceId,
+          state: { sourceId, status: "SKIPPED" },
+        });
+        continue;
+      }
       const retryKey = retryKeyFor(definition.entityType, sourceId);
       if (input.retryOnly && !input.retryOnly.has(retryKey)) continue;
       if (!input.retryOnly && seen <= checkpoint.processed) continue;
@@ -266,8 +294,13 @@ export async function runMigrationPipeline(input: {
         return { paused: true };
       }
 
-      const displayName = definition.displayName(source.normalized);
-      const validationErrors = definition.validate(source.normalized);
+      const mappedRecord = applyRecordMappings(
+        definition.entityType,
+        source.normalized,
+        mappingRules,
+      );
+      const displayName = definition.displayName(mappedRecord);
+      const validationErrors = definition.validate(mappedRecord);
       if (validationErrors.length > 0) {
         const record = await input.store.upsertRecord({
           entityType: definition.entityType,
@@ -275,7 +308,7 @@ export async function runMigrationPipeline(input: {
           sourceHash: source.hash,
           displayName,
           status: "FAILED",
-          normalizedData: source.normalized,
+          normalizedData: mappedRecord,
         });
         await input.store.recordError({
           migrationRecordId: record.id,
@@ -305,7 +338,7 @@ export async function runMigrationPipeline(input: {
           sourceHash: source.hash,
           displayName,
           status: "NORMALIZED",
-          normalizedData: source.normalized,
+          normalizedData: mappedRecord,
         });
         await input.store.updateMigrationCounters({ processed: 1 });
         await input.store.saveCheckpoint({
@@ -329,7 +362,7 @@ export async function runMigrationPipeline(input: {
           displayName,
           status: "DUPLICATE_PREVENTED",
           destinationGid: existingGid,
-          normalizedData: source.normalized,
+          normalizedData: mappedRecord,
         });
         await input.store.updateMigrationCounters({
           processed: 1,
@@ -345,7 +378,7 @@ export async function runMigrationPipeline(input: {
       }
 
       try {
-        const result = await definition.migrate(source.normalized, context);
+        const result = await definition.migrate(mappedRecord, context);
         assertRealShopifyGid(result.gid);
         const status = result.duplicatePrevented
           ? "DUPLICATE_PREVENTED"
@@ -359,7 +392,7 @@ export async function runMigrationPipeline(input: {
           displayName,
           status,
           destinationGid: result.gid,
-          normalizedData: source.normalized,
+          normalizedData: mappedRecord,
         });
         await input.store.upsertMapping({
           entityType: definition.entityType,
@@ -387,7 +420,7 @@ export async function runMigrationPipeline(input: {
           sourceHash: source.hash,
           displayName,
           status: "FAILED",
-          normalizedData: source.normalized,
+          normalizedData: mappedRecord,
         });
         await input.store.recordError({
           migrationRecordId: record.id,
@@ -458,7 +491,10 @@ async function runDryRun(migration: MigrationWithConnections) {
   });
   await prisma.migration.update({
     where: { id: migration.id },
-    data: { status: result.paused ? "PAUSED" : "DRY_RUN_COMPLETE" },
+    data: {
+      status: result.paused ? "PAUSED" : "DRY_RUN_COMPLETE",
+      currentStep: result.paused ? 6 : 7,
+    },
   });
   await publishProgress(migration.id, "Dry run completed.");
 }
@@ -533,6 +569,7 @@ async function runMigration(migration: MigrationWithConnections) {
     data: {
       status:
         final && final.failedRecords > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
+      currentStep: 8,
       completedAt: new Date(),
     },
   });
@@ -1071,13 +1108,21 @@ function prismaMigrationStore(migrationId: string): MigrationStore {
         where: { id: migrationId },
         select: { status: true },
       });
-      return fresh?.status === "PAUSING";
+      return fresh?.status === "PAUSING" || fresh?.status === "CANCELLED";
     },
     async pause() {
+      const fresh = await prisma.migration.findUnique({
+        where: { id: migrationId },
+        select: { status: true },
+      });
+      if (fresh?.status === "CANCELLED") return;
       await prisma.migration.update({
         where: { id: migrationId },
         data: { status: "PAUSED" },
       });
+    },
+    mappingRules() {
+      return prisma.mappingRule.findMany({ where: { migrationId } });
     },
   };
 }
@@ -1206,6 +1251,65 @@ function mergeAuditResults(
     existing.warnings.push(...result.warnings);
   }
   return [...merged.values()];
+}
+
+function shouldSkipByMapping(
+  rules: MappingRule[],
+  entityType: EntityType,
+  sourceId: string,
+) {
+  return rules.some(
+    (rule) =>
+      rule.action === "SKIP" &&
+      (rule.sourceKey === sourceId ||
+        rule.sourceKey === entityType ||
+        rule.sourceKey === `${entityType}:${sourceId}`),
+  );
+}
+
+function applyRecordMappings<T>(
+  entityType: EntityType,
+  record: T,
+  rules: MappingRule[],
+): T {
+  if (entityType !== "PRODUCT" || !record || typeof record !== "object") {
+    return record;
+  }
+  const product = record as unknown as NormalizedProduct;
+  const attributeRules = rules.filter((rule) => rule.ruleType === "ATTRIBUTE");
+  if (attributeRules.length === 0) return record;
+
+  const mapped: NormalizedProduct = {
+    ...product,
+    tags: [...product.tags],
+    options: [...product.options],
+    metafields: [...product.metafields],
+  };
+
+  for (const rule of attributeRules) {
+    const option = mapped.options.find((item) => item.name === rule.sourceKey);
+    if (!option) continue;
+    if (rule.action === "SKIP") {
+      mapped.options = mapped.options.filter((item) => item.name !== rule.sourceKey);
+    } else if (rule.action === "TAG") {
+      mapped.tags.push(...option.values);
+      mapped.options = mapped.options.filter((item) => item.name !== rule.sourceKey);
+    } else if (rule.action === "METAFIELD") {
+      mapped.metafields.push({
+        namespace: "storebridge",
+        key: (rule.targetKey ?? rule.sourceKey).toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+        type: "single_line_text_field",
+        value: option.values.join(", "),
+      });
+      mapped.options = mapped.options.filter((item) => item.name !== rule.sourceKey);
+    } else if (rule.action === "OPTION" && rule.targetKey) {
+      mapped.options = mapped.options.map((item) =>
+        item.name === rule.sourceKey ? { ...item, name: rule.targetKey as string } : item,
+      );
+    }
+  }
+
+  return mapped as T;
 }
 
 export function sourceHash(record: unknown) {

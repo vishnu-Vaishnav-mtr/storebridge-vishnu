@@ -125,5 +125,11 @@ export async function getInfrastructureHealth() {
     })),
   ]);
 
-  return { postgres, redis, worker };
+  const objectStorage: HealthCheckResult = {
+    label: "Object Storage",
+    status: process.env.OBJECT_STORAGE_PROVIDER ? "Healthy" : "Not configured",
+    lastCheckedAt: new Date(),
+  };
+
+  return { postgres, redis, worker, objectStorage };
 }

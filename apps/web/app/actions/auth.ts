@@ -9,6 +9,7 @@ import {
   registerSchema,
   safeCallbackUrl,
 } from "@/lib/auth-validation";
+import { rateLimit } from "@/lib/rate-limit";
 
 export async function loginAction(formData: FormData) {
   const parsed = loginSchema.safeParse({
@@ -22,6 +23,16 @@ export async function loginAction(formData: FormData) {
     redirect(
       `/login?error=invalid_input&callbackUrl=${encodeURIComponent(callbackUrl)}`,
     );
+  const limited = rateLimit({
+    key: `login:${parsed.data.email.toLowerCase()}`,
+    limit: 8,
+    windowMs: 15 * 60 * 1000,
+  });
+  if (!limited.ok) {
+    redirect(
+      `/login?error=Too%20many%20login%20attempts.&callbackUrl=${encodeURIComponent(callbackUrl)}`,
+    );
+  }
 
   try {
     await signIn("credentials", {
@@ -51,6 +62,16 @@ export async function registerAction(formData: FormData) {
   if (!parsed.success) {
     redirect(
       `/register?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Check your details.")}&callbackUrl=${encodeURIComponent(callbackUrl)}`,
+    );
+  }
+  const limited = rateLimit({
+    key: `register:${parsed.data.email.toLowerCase()}`,
+    limit: 5,
+    windowMs: 60 * 60 * 1000,
+  });
+  if (!limited.ok) {
+    redirect(
+      `/register?error=Too%20many%20registration%20attempts.&callbackUrl=${encodeURIComponent(callbackUrl)}`,
     );
   }
 

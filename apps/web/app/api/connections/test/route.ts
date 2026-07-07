@@ -11,6 +11,7 @@ import {
 import { ShopifyAdapter } from "@storebridge/shopify-adapter";
 import { WooCommerceAdapter } from "@storebridge/woo-adapter";
 import { getCurrentMembership } from "@/lib/session";
+import { rateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   const membership = await getCurrentMembership();
@@ -18,6 +19,17 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { ok: false, error: "Authentication required." },
       { status: 401 },
+    );
+  }
+  const limited = rateLimit({
+    key: `connection-test:${membership.organisationId}`,
+    limit: 20,
+    windowMs: 15 * 60 * 1000,
+  });
+  if (!limited.ok) {
+    return NextResponse.json(
+      { ok: false, error: "Too many connection attempts." },
+      { status: 429 },
     );
   }
 

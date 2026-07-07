@@ -129,9 +129,7 @@ export default async function DashboardPage() {
               { label: "Worker", status: health.worker.status },
               {
                 label: "Object Storage",
-                status: process.env.OBJECT_STORAGE_PROVIDER
-                  ? "Not configured"
-                  : "Not configured",
+                status: health.objectStorage.status,
               },
               { label: "Real-time updates", status: health.redis.status },
             ].map((item) => (

@@ -40,6 +40,15 @@ export async function POST(request: Request) {
     });
   }
 
+  if (input.action === "cancel") {
+    await prisma.migration.update({
+      where: { id: migration.id },
+      data: { status: "CANCELLED" },
+    });
+    await log(migration.id, "WARNING", "Migration cancelled by user.");
+    return NextResponse.json({ message: "Migration has been cancelled." });
+  }
+
   if (input.action === "resume") {
     if (!canTransitionMigration(migration.status as never, "RESUMING")) {
       return NextResponse.json(
@@ -47,7 +56,8 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
-    await enqueueMigrationJob("resume", migration.id);
+    const queued = await enqueueOrError("resume", migration.id);
+    if (queued) return queued;
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "RESUMING" },
@@ -58,7 +68,8 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "start") {
-    await enqueueMigrationJob("start", migration.id);
+    const queued = await enqueueOrError("start", migration.id);
+    if (queued) return queued;
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "QUEUED" },
@@ -67,7 +78,8 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "retry-failed") {
-    await enqueueMigrationJob("retry-failed", migration.id);
+    const queued = await enqueueOrError("retry-failed", migration.id);
+    if (queued) return queued;
     await log(
       migration.id,
       "INFO",
@@ -79,7 +91,8 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "verify") {
-    await enqueueMigrationJob("verify", migration.id);
+    const queued = await enqueueOrError("verify", migration.id);
+    if (queued) return queued;
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "VERIFYING" },
@@ -87,7 +100,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: "Verification has started." });
   }
 
-  await enqueueMigrationJob("dry-run", migration.id);
+  const queued = await enqueueOrError("dry-run", migration.id);
+  if (queued) return queued;
   await prisma.migration.update({
     where: { id: migration.id },
     data: { status: "DRY_RUNNING" },
@@ -101,4 +115,16 @@ async function log(
   message: string,
 ) {
   await prisma.migrationLog.create({ data: { migrationId, level, message } });
+}
+
+async function enqueueOrError(action: string, migrationId: string) {
+  try {
+    await enqueueMigrationJob(action, migrationId);
+    return null;
+  } catch {
+    return NextResponse.json(
+      { message: "Redis queue failure. Job was not queued." },
+      { status: 503 },
+    );
+  }
 }
