@@ -19,6 +19,7 @@
     "@storebridge/shared": "workspace:*",
     "@storebridge/shopify-adapter": "workspace:*",
     "@storebridge/woo-adapter": "workspace:*",
+    "@storebridge/wordpress-adapter": "workspace:*",
     "bullmq": "^5.34.5",
     "ioredis": "^5.4.2"
   }

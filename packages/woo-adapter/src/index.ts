@@ -1,7 +1,14 @@
 import type {
   AdapterConnectionResult,
   AuditEntityResult,
+  NormalizedAddress,
+  NormalizedCollection,
+  NormalizedCustomer,
+  NormalizedInventoryItem,
+  NormalizedOrder,
   NormalizedProduct,
+  NormalizedVariant,
+  NormalizedImage,
 } from "@storebridge/shared";
 import { stableHash, validatePublicStoreUrl } from "@storebridge/shared";
 
@@ -121,6 +128,118 @@ export class WooCommerceAdapter {
     }
   }
 
+  async *productVariations(pageSize = 50): AsyncGenerator<{
+    normalized: NormalizedVariant;
+    raw: unknown;
+    hash: string;
+  }> {
+    for await (const product of this.rawPaginated("products", pageSize)) {
+      const productId = String(product.id);
+      for await (const variation of this.rawPaginated(
+        `products/${productId}/variations`,
+        pageSize,
+      )) {
+        const normalized = normalizeWooVariation(variation, productId);
+        yield { normalized, raw: variation, hash: stableHash(variation) };
+      }
+    }
+  }
+
+  async *productCategories(pageSize = 50): AsyncGenerator<{
+    normalized: NormalizedCollection;
+    raw: unknown;
+    hash: string;
+  }> {
+    for await (const category of this.rawPaginated(
+      "products/categories",
+      pageSize,
+    )) {
+      const normalized = normalizeWooCategory(category);
+      yield { normalized, raw: category, hash: stableHash(category) };
+    }
+  }
+
+  async *productImages(pageSize = 50): AsyncGenerator<{
+    normalized: NormalizedImage & { productSourceId: string };
+    raw: unknown;
+    hash: string;
+  }> {
+    for await (const product of this.rawPaginated("products", pageSize)) {
+      const productSourceId = String(product.id);
+      const images = Array.isArray(product.images) ? product.images : [];
+      for (const image of images) {
+        const normalized = normalizeWooImage(image, productSourceId);
+        yield { normalized, raw: image, hash: stableHash(image) };
+      }
+    }
+  }
+
+  async *inventory(pageSize = 50): AsyncGenerator<{
+    normalized: NormalizedInventoryItem;
+    raw: unknown;
+    hash: string;
+  }> {
+    for await (const product of this.rawPaginated("products", pageSize)) {
+      const normalized = normalizeWooInventory(product);
+      if (normalized) yield { normalized, raw: product, hash: stableHash(product) };
+
+      const productId = String(product.id);
+      for await (const variation of this.rawPaginated(
+        `products/${productId}/variations`,
+        pageSize,
+      )) {
+        const variationInventory = normalizeWooInventory(variation, productId);
+        if (variationInventory) {
+          yield {
+            normalized: variationInventory,
+            raw: variation,
+            hash: stableHash(variation),
+          };
+        }
+      }
+    }
+  }
+
+  async *customers(pageSize = 50): AsyncGenerator<{
+    normalized: NormalizedCustomer;
+    raw: unknown;
+    hash: string;
+  }> {
+    for await (const customer of this.rawPaginated("customers", pageSize)) {
+      const normalized = normalizeWooCustomer(customer);
+      yield { normalized, raw: customer, hash: stableHash(customer) };
+    }
+  }
+
+  async *customerAddresses(pageSize = 50): AsyncGenerator<{
+    normalized: NormalizedAddress & { customerSourceId: string };
+    raw: unknown;
+    hash: string;
+  }> {
+    for await (const customer of this.rawPaginated("customers", pageSize)) {
+      const customerSourceId = String(customer.id);
+      const normalized = normalizeWooCustomer(customer);
+      for (const address of normalized.addresses) {
+        yield {
+          normalized: { ...address, customerSourceId },
+          raw: address,
+          hash: stableHash(address),
+        };
+      }
+    }
+  }
+
+  async *orders(pageSize = 50): AsyncGenerator<{
+    normalized: NormalizedOrder;
+    raw: unknown;
+    hash: string;
+  }> {
+    for await (const order of this.rawPaginated("orders", pageSize)) {
+      const normalized = normalizeWooOrder(order);
+      yield { normalized, raw: order, hash: stableHash(order) };
+    }
+  }
+
   private async count(endpoint: string): Promise<number> {
     const response = await this.rawRequest(endpoint, {
       page: "1",
@@ -137,6 +256,25 @@ export class WooCommerceAdapter {
     if (!response.ok)
       throw new Error(`WooCommerce returned ${response.status}.`);
     return (await response.json()) as T;
+  }
+
+  private async *rawPaginated(
+    endpoint: string,
+    pageSize: number,
+  ): AsyncGenerator<Record<string, unknown>> {
+    let page = 1;
+    while (true) {
+      const rows = await this.request<Array<Record<string, unknown>>>(
+        endpoint,
+        {
+          page: String(page),
+          per_page: String(pageSize),
+        },
+      );
+      if (rows.length === 0) break;
+      for (const row of rows) yield row;
+      page += 1;
+    }
   }
 
   private async rawRequest(
@@ -232,6 +370,191 @@ function normalizeWooProduct(
   if (typeof product.price === "string") normalized.price = product.price;
   if (typeof product.regular_price === "string")
     normalized.compareAtPrice = product.regular_price;
+  const seo = normalizeSeo(product);
+  if (seo.title || seo.description) normalized.seo = seo;
 
   return normalized;
+}
+
+function normalizeWooVariation(
+  variation: Record<string, unknown>,
+  productSourceId: string,
+): NormalizedVariant {
+  const attributes = Array.isArray(variation.attributes)
+    ? variation.attributes
+    : [];
+  const normalized: NormalizedVariant = {
+    sourceId: String(variation.id),
+    productSourceId,
+    title: String(variation.name ?? variation.sku ?? variation.id),
+    optionValues: attributes
+      .map((attribute) => ({
+        optionName: String((attribute as { name?: unknown }).name ?? ""),
+        name: String((attribute as { option?: unknown }).option ?? ""),
+      }))
+      .filter((value) => value.optionName && value.name),
+    metafields: [],
+  };
+  if (typeof variation.sku === "string") normalized.sku = variation.sku;
+  if (typeof variation.price === "string") normalized.price = variation.price;
+  if (typeof variation.regular_price === "string")
+    normalized.compareAtPrice = variation.regular_price;
+  if (typeof variation.stock_quantity === "number")
+    normalized.inventoryQuantity = variation.stock_quantity;
+  return normalized;
+}
+
+function normalizeWooCategory(
+  category: Record<string, unknown>,
+): NormalizedCollection {
+  const normalized: NormalizedCollection = {
+    sourceId: String(category.id),
+    title: String(category.name ?? "Untitled collection"),
+  };
+  if (typeof category.slug === "string") normalized.handle = category.slug;
+  if (typeof category.description === "string")
+    normalized.descriptionHtml = category.description;
+  const seo = normalizeSeo(category);
+  if (seo.title || seo.description) normalized.seo = seo;
+  return normalized;
+}
+
+function normalizeWooImage(
+  image: unknown,
+  productSourceId: string,
+): NormalizedImage & { productSourceId: string } {
+  const row = image as { id?: unknown; src?: unknown; alt?: unknown };
+  return {
+    sourceId: String(row.id ?? row.src),
+    productSourceId,
+    url: String(row.src ?? ""),
+    altText: String(row.alt ?? ""),
+  };
+}
+
+function normalizeWooInventory(
+  row: Record<string, unknown>,
+  parentProductSourceId?: string,
+): NormalizedInventoryItem | null {
+  if (row.manage_stock !== true && typeof row.stock_quantity !== "number")
+    return null;
+  const sourceId = String(row.id);
+  const normalized: NormalizedInventoryItem = {
+    sourceId,
+    quantity: Number(row.stock_quantity ?? 0),
+  };
+  if (typeof row.sku === "string") normalized.sku = row.sku;
+  if (parentProductSourceId) {
+    normalized.productSourceId = parentProductSourceId;
+    normalized.variantSourceId = sourceId;
+  } else {
+    normalized.productSourceId = sourceId;
+  }
+  return normalized;
+}
+
+function normalizeWooCustomer(customer: Record<string, unknown>): NormalizedCustomer {
+  const normalized: NormalizedCustomer = {
+    sourceId: String(customer.id),
+    addresses: [],
+    metafields: [],
+  };
+  if (typeof customer.email === "string") normalized.email = customer.email;
+  if (typeof customer.first_name === "string")
+    normalized.firstName = customer.first_name;
+  if (typeof customer.last_name === "string")
+    normalized.lastName = customer.last_name;
+  const billing = normalizeWooAddress(customer.billing, `${customer.id}:billing`);
+  const shipping = normalizeWooAddress(customer.shipping, `${customer.id}:shipping`);
+  if (billing) normalized.addresses.push(billing);
+  if (shipping) normalized.addresses.push(shipping);
+  return normalized;
+}
+
+function normalizeWooOrder(order: Record<string, unknown>): NormalizedOrder {
+  const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
+  const normalized: NormalizedOrder = {
+    sourceId: String(order.id),
+    name: String(order.number ?? order.id),
+    lineItems: lineItems.map((lineItem) => {
+      const item = lineItem as Record<string, unknown>;
+      const output: {
+        title: string;
+        quantity: number;
+        sku?: string;
+        price?: string;
+        productSourceId?: string;
+        variantSourceId?: string;
+      } = {
+        title: String(item.name ?? item.sku ?? "Line item"),
+        quantity: Number(item.quantity ?? 1),
+      };
+      if (typeof item.sku === "string") output.sku = item.sku;
+      if (typeof item.price === "string") output.price = item.price;
+      if (item.product_id != null) output.productSourceId = String(item.product_id);
+      if (item.variation_id != null && Number(item.variation_id) > 0)
+        output.variantSourceId = String(item.variation_id);
+      return output;
+    }),
+    metafields: [
+      {
+        namespace: "storebridge",
+        key: "source_order_status",
+        type: "single_line_text_field",
+        value: String(order.status ?? ""),
+      },
+    ],
+  };
+  if (typeof order.billing === "object") {
+    const billingAddress = normalizeWooAddress(
+      order.billing,
+      `${order.id}:billing`,
+    );
+    if (billingAddress) normalized.billingAddress = billingAddress;
+  }
+  if (typeof order.shipping === "object") {
+    const shippingAddress = normalizeWooAddress(
+      order.shipping,
+      `${order.id}:shipping`,
+    );
+    if (shippingAddress) normalized.shippingAddress = shippingAddress;
+  }
+  if (typeof order.email === "string") normalized.email = order.email;
+  if (typeof order.date_created_gmt === "string")
+    normalized.processedAt = `${order.date_created_gmt}Z`;
+  if (typeof order.currency === "string") normalized.currencyCode = order.currency;
+  if (typeof order.total === "string") normalized.totalPrice = order.total;
+  if (order.customer_id != null && Number(order.customer_id) > 0)
+    normalized.customerSourceId = String(order.customer_id);
+  return normalized;
+}
+
+function normalizeWooAddress(
+  value: unknown,
+  sourceId: string,
+): NormalizedAddress | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const address = value as Record<string, unknown>;
+  const normalized: NormalizedAddress = { sourceId };
+  if (typeof address.first_name === "string")
+    normalized.firstName = address.first_name;
+  if (typeof address.last_name === "string") normalized.lastName = address.last_name;
+  if (typeof address.company === "string") normalized.company = address.company;
+  if (typeof address.address_1 === "string") normalized.address1 = address.address_1;
+  if (typeof address.address_2 === "string") normalized.address2 = address.address_2;
+  if (typeof address.city === "string") normalized.city = address.city;
+  if (typeof address.state === "string") normalized.province = address.state;
+  if (typeof address.country === "string") normalized.country = address.country;
+  if (typeof address.postcode === "string") normalized.zip = address.postcode;
+  if (typeof address.phone === "string") normalized.phone = address.phone;
+  if (!normalized.address1 && !normalized.city && !normalized.country) return undefined;
+  return normalized;
+}
+
+function normalizeSeo(row: Record<string, unknown>) {
+  const meta = row.yoast_head_json as Record<string, unknown> | undefined;
+  const seo: { title?: string; description?: string } = {};
+  if (typeof meta?.title === "string") seo.title = meta.title;
+  if (typeof meta?.description === "string") seo.description = meta.description;
+  return seo;
 }
