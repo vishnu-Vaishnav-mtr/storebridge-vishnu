@@ -1,0 +1,541 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+enum StorePlatform {
+  WOOCOMMERCE
+  SHOPIFY
+  WORDPRESS
+  DEMO_WOOCOMMERCE
+  DEMO_SHOPIFY
+}
+
+enum ConnectionStatus {
+  NOT_CONFIGURED
+  TESTING
+  CONNECTED
+  CONNECTED_WITH_WARNINGS
+  PERMISSION_MISSING
+  CONNECTION_FAILED
+  DISCONNECTED
+}
+
+enum MigrationStatus {
+  DRAFT
+  AUDITING
+  READY
+  DRY_RUNNING
+  DRY_RUN_COMPLETE
+  QUEUED
+  RUNNING
+  PAUSING
+  PAUSED
+  RESUMING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  VERIFYING
+  VERIFIED
+  VERIFIED_WITH_WARNINGS
+  PARTIALLY_VERIFIED
+  VERIFICATION_FAILED
+  FAILED
+  CANCELLED
+}
+
+enum ModuleStatus {
+  SELECTED
+  SKIPPED
+  BLOCKED
+  COMPLETED
+  FAILED
+}
+
+enum EntityType {
+  PRODUCT
+  VARIANT
+  COLLECTION
+  INVENTORY
+  MEDIA
+  CUSTOMER
+  CUSTOMER_ADDRESS
+  ORDER
+  REFUND
+  COUPON
+  PAGE
+  POST
+  REVIEW
+  REDIRECT
+  METAFIELD
+  CUSTOM_FIELD
+}
+
+enum RecordStatus {
+  PENDING
+  NORMALIZED
+  DUPLICATE_PREVENTED
+  CREATED
+  UPDATED
+  SKIPPED
+  FAILED
+  UNSUPPORTED
+  VERIFIED
+}
+
+enum ErrorCategory {
+  VALIDATION
+  AUTHENTICATION
+  PERMISSION
+  RATE_LIMIT
+  NETWORK
+  SOURCE_DATA
+  MAPPING
+  DESTINATION_USER
+  UNSUPPORTED_FEATURE
+  UNKNOWN
+}
+
+enum LogLevel {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+  DEBUG
+}
+
+enum ReportType {
+  SOURCE_AUDIT
+  DRY_RUN
+  MIGRATION_SUMMARY
+  SUCCESSFUL_RECORDS
+  UPDATED_RECORDS
+  SKIPPED_RECORDS
+  DUPLICATES_PREVENTED
+  FAILED_RECORDS
+  UNSUPPORTED_DATA
+  SEO
+  REDIRECT
+  RECONCILIATION
+  FINAL_CUTOVER
+}
+
+enum ReportFormat {
+  CSV
+  JSON
+  HTML
+}
+
+enum ImportFileStatus {
+  UPLOADED
+  VALIDATING
+  VALID
+  INVALID
+  IMPORTED
+  REMOVED
+}
+
+model User {
+  id                String               @id @default(cuid())
+  name              String?
+  email             String               @unique
+  emailVerified     DateTime?
+  passwordHash      String?
+  image             String?
+  accounts          Account[]
+  sessions          Session[]
+  memberships       OrganisationMember[]
+  activityLogs      ActivityLog[]
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Organisation {
+  id              String               @id @default(cuid())
+  name            String
+  slug            String               @unique
+  members         OrganisationMember[]
+  connections     StoreConnection[]
+  migrations      Migration[]
+  activityLogs    ActivityLog[]
+  uploadedFiles   UploadedImportFile[]
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+}
+
+model OrganisationMember {
+  id             String       @id @default(cuid())
+  organisationId String
+  userId         String
+  role           UserRole
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([organisationId, userId])
+  @@index([userId])
+}
+
+model StoreConnection {
+  id              String                @id @default(cuid())
+  organisationId  String
+  name            String
+  platform        StorePlatform
+  status          ConnectionStatus      @default(NOT_CONFIGURED)
+  url             String
+  apiVersion      String?
+  metadata        Json                  @default("{}")
+  health          Json                  @default("{}")
+  lastCheckedAt   DateTime?
+  deletedAt       DateTime?
+  organisation    Organisation          @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  credentials     EncryptedCredential[]
+  sourceMigrations Migration[]          @relation("SourceConnection")
+  targetMigrations Migration[]          @relation("TargetConnection")
+  activityLogs    ActivityLog[]
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  @@index([organisationId, platform, status])
+}
+
+model EncryptedCredential {
+  id              String          @id @default(cuid())
+  storeConnectionId String
+  name            String
+  version         Int             @default(1)
+  ciphertext      String
+  iv              String
+  authTag         String
+  algorithm       String          @default("aes-256-gcm")
+  maskedValue     String
+  deletedAt       DateTime?
+  storeConnection StoreConnection @relation(fields: [storeConnectionId], references: [id], onDelete: Cascade)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@unique([storeConnectionId, name, version])
+  @@index([storeConnectionId, deletedAt])
+}
+
+model Migration {
+  id                 String                   @id @default(cuid())
+  organisationId     String
+  name               String
+  sourceConnectionId String
+  targetConnectionId String
+  status             MigrationStatus          @default(DRAFT)
+  duplicateStrategy  String                   @default("SKIP_EXISTING")
+  currentStep        Int                      @default(1)
+  totalRecords       Int                      @default(0)
+  processedRecords   Int                      @default(0)
+  failedRecords      Int                      @default(0)
+  duplicatesPrevented Int                     @default(0)
+  configuration      MigrationConfiguration?
+  modules            MigrationModule[]
+  checkpoints        MigrationCheckpoint[]
+  records            MigrationRecord[]
+  mappings           EntityMapping[]
+  errors             MigrationError[]
+  logs               MigrationLog[]
+  auditResults       AuditResult[]
+  mappingRules       MappingRule[]
+  validationResults  ValidationResult[]
+  reports            Report[]
+  organisation       Organisation             @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  sourceConnection   StoreConnection          @relation("SourceConnection", fields: [sourceConnectionId], references: [id])
+  targetConnection   StoreConnection          @relation("TargetConnection", fields: [targetConnectionId], references: [id])
+  startedAt          DateTime?
+  completedAt        DateTime?
+  verifiedAt         DateTime?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  @@index([organisationId, status])
+  @@index([sourceConnectionId, targetConnectionId])
+}
+
+model MigrationModule {
+  id          String       @id @default(cuid())
+  migrationId String
+  entityType  EntityType
+  enabled     Boolean      @default(true)
+  status      ModuleStatus @default(SELECTED)
+  sourceCount Int          @default(0)
+  warningCount Int         @default(0)
+  migration   Migration    @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+
+  @@unique([migrationId, entityType])
+}
+
+model MigrationConfiguration {
+  id          String    @id @default(cuid())
+  migrationId String   @unique
+  modules     Json     @default("{}")
+  mappings    Json     @default("{}")
+  options     Json     @default("{}")
+  migration   Migration @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model MigrationCheckpoint {
+  id          String     @id @default(cuid())
+  migrationId String
+  entityType  EntityType
+  cursor      String?
+  lastSourceId String?
+  processed   Int        @default(0)
+  state        Json       @default("{}")
+  migration   Migration  @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([migrationId, entityType])
+  @@index([migrationId, updatedAt])
+}
+
+model MigrationRecord {
+  id              String       @id @default(cuid())
+  migrationId     String
+  entityType      EntityType
+  sourceId        String
+  sourceHash      String
+  destinationGid  String?
+  displayName     String?
+  status          RecordStatus @default(PENDING)
+  normalizedData  Json?
+  snapshotId      String?
+  attempts        Int          @default(0)
+  migration       Migration    @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  sourceSnapshot  SourceSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  errors          MigrationError[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([migrationId, entityType, sourceId])
+  @@index([entityType, sourceId])
+  @@index([destinationGid])
+  @@index([migrationId, status])
+}
+
+model SourceSnapshot {
+  id          String            @id @default(cuid())
+  entityType  EntityType
+  sourceId    String
+  hash        String
+  payload     Json
+  records     MigrationRecord[]
+  createdAt   DateTime          @default(now())
+
+  @@unique([entityType, sourceId, hash])
+}
+
+model EntityMapping {
+  id              String      @id @default(cuid())
+  migrationId     String
+  entityType      EntityType
+  sourceId        String
+  destinationGid  String
+  sourceHash      String?
+  migration       Migration   @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@unique([migrationId, entityType, sourceId])
+  @@unique([migrationId, entityType, destinationGid])
+  @@index([destinationGid])
+}
+
+model MigrationError {
+  id                 String        @id @default(cuid())
+  migrationId        String
+  migrationRecordId  String?
+  entityType         EntityType?
+  sourceId           String?
+  name               String?
+  category           ErrorCategory
+  stage              String
+  message            String
+  technicalDetails   Json?
+  retryable          Boolean       @default(false)
+  resolvedAt         DateTime?
+  attempt            Int           @default(1)
+  lastAttemptedAt    DateTime      @default(now())
+  migration          Migration     @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  migrationRecord    MigrationRecord? @relation(fields: [migrationRecordId], references: [id], onDelete: SetNull)
+  createdAt          DateTime      @default(now())
+
+  @@index([migrationId, retryable, resolvedAt])
+  @@index([entityType, sourceId])
+}
+
+model MigrationLog {
+  id          String    @id @default(cuid())
+  migrationId String
+  level       LogLevel
+  entityType  EntityType?
+  sourceId    String?
+  message     String
+  details     Json?
+  migration   Migration @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@index([migrationId, level, createdAt])
+}
+
+model AuditResult {
+  id             String     @id @default(cuid())
+  migrationId    String
+  entityType     EntityType
+  detectedCount  Int        @default(0)
+  supportedCount Int        @default(0)
+  needsMapping   Int        @default(0)
+  warningCount   Int        @default(0)
+  unsupportedCount Int      @default(0)
+  warnings       Json       @default("[]")
+  migration      Migration  @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime   @default(now())
+
+  @@unique([migrationId, entityType])
+}
+
+model MappingRule {
+  id          String     @id @default(cuid())
+  migrationId String
+  ruleType    String
+  sourceKey   String
+  targetKey   String?
+  action      String
+  options     Json       @default("{}")
+  migration   Migration  @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([migrationId, ruleType])
+}
+
+model ValidationResult {
+  id          String     @id @default(cuid())
+  migrationId String
+  stage       String
+  status      String
+  score       Int        @default(0)
+  issues      Json       @default("[]")
+  migration   Migration  @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+}
+
+model Report {
+  id          String       @id @default(cuid())
+  migrationId String
+  type        ReportType
+  format      ReportFormat
+  title       String
+  objectKey   String?
+  content     Json?
+  migration   Migration    @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  createdAt   DateTime     @default(now())
+
+  @@index([migrationId, type])
+}
+
+model ActivityLog {
+  id                String           @id @default(cuid())
+  organisationId    String
+  userId            String?
+  storeConnectionId String?
+  action            String
+  message           String
+  metadata          Json             @default("{}")
+  organisation      Organisation     @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user              User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  storeConnection   StoreConnection? @relation(fields: [storeConnectionId], references: [id], onDelete: SetNull)
+  createdAt         DateTime         @default(now())
+
+  @@index([organisationId, createdAt])
+}
+
+model WorkerHeartbeat {
+  id          String   @id @default(cuid())
+  workerId    String   @unique
+  queueName   String
+  status      String
+  lastSeenAt  DateTime @default(now())
+  metrics     Json     @default("{}")
+}
+
+model UploadedImportFile {
+  id              String           @id @default(cuid())
+  organisationId  String
+  filename        String
+  fileType        String
+  mimeType        String
+  sizeBytes       Int
+  status          ImportFileStatus @default(UPLOADED)
+  recordCount     Int?
+  errors          Json             @default("[]")
+  objectKey       String
+  organisation    Organisation     @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([organisationId, status])
+}
+
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  provider    String
+  topic       String
+  externalId  String?
+  verified    Boolean  @default(false)
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([provider, topic, processedAt])
+}

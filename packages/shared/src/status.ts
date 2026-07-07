@@ -1,0 +1,57 @@
+export type MigrationLifecycleStatus =
+  | "DRAFT"
+  | "AUDITING"
+  | "READY"
+  | "DRY_RUNNING"
+  | "DRY_RUN_COMPLETE"
+  | "QUEUED"
+  | "RUNNING"
+  | "PAUSING"
+  | "PAUSED"
+  | "RESUMING"
+  | "COMPLETED"
+  | "COMPLETED_WITH_ERRORS"
+  | "VERIFYING"
+  | "VERIFIED"
+  | "VERIFIED_WITH_WARNINGS"
+  | "PARTIALLY_VERIFIED"
+  | "VERIFICATION_FAILED"
+  | "FAILED"
+  | "CANCELLED";
+
+const ALLOWED_TRANSITIONS: Record<
+  MigrationLifecycleStatus,
+  MigrationLifecycleStatus[]
+> = {
+  DRAFT: ["AUDITING", "READY", "CANCELLED"],
+  AUDITING: ["READY", "FAILED"],
+  READY: ["DRY_RUNNING", "QUEUED", "CANCELLED"],
+  DRY_RUNNING: ["DRY_RUN_COMPLETE", "FAILED"],
+  DRY_RUN_COMPLETE: ["QUEUED", "CANCELLED"],
+  QUEUED: ["RUNNING", "PAUSED", "CANCELLED"],
+  RUNNING: ["PAUSING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"],
+  PAUSING: ["PAUSED", "FAILED"],
+  PAUSED: ["RESUMING", "CANCELLED"],
+  RESUMING: ["RUNNING", "FAILED"],
+  COMPLETED: ["VERIFYING"],
+  COMPLETED_WITH_ERRORS: ["VERIFYING", "RUNNING"],
+  VERIFYING: [
+    "VERIFIED",
+    "VERIFIED_WITH_WARNINGS",
+    "PARTIALLY_VERIFIED",
+    "VERIFICATION_FAILED",
+  ],
+  VERIFIED: [],
+  VERIFIED_WITH_WARNINGS: ["RUNNING"],
+  PARTIALLY_VERIFIED: ["RUNNING"],
+  VERIFICATION_FAILED: ["RUNNING"],
+  FAILED: ["RUNNING", "CANCELLED"],
+  CANCELLED: [],
+};
+
+export function canTransitionMigration(
+  from: MigrationLifecycleStatus,
+  to: MigrationLifecycleStatus,
+): boolean {
+  return ALLOWED_TRANSITIONS[from]?.includes(to) ?? false;
+}

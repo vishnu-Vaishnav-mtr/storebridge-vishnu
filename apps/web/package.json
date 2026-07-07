@@ -1,0 +1,49 @@
+{
+  "name": "@storebridge/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@auth/prisma-adapter": "^2.7.4",
+    "@hookform/resolvers": "^3.9.1",
+    "@prisma/client": "^6.1.0",
+    "@radix-ui/react-dialog": "^1.1.4",
+    "@radix-ui/react-dropdown-menu": "^2.1.4",
+    "@radix-ui/react-tooltip": "^1.1.6",
+    "@storebridge/database": "workspace:*",
+    "@storebridge/logger": "workspace:*",
+    "@storebridge/migration-core": "workspace:*",
+    "@storebridge/shared": "workspace:*",
+    "@storebridge/shopify-adapter": "workspace:*",
+    "@storebridge/woo-adapter": "workspace:*",
+    "@storebridge/wordpress-adapter": "workspace:*",
+    "@tanstack/react-table": "^8.20.6",
+    "bcryptjs": "^2.4.3",
+    "bullmq": "^5.34.5",
+    "framer-motion": "^11.15.0",
+    "ioredis": "^5.4.2",
+    "lucide-react": "^0.468.0",
+    "next": "^15.1.2",
+    "next-auth": "^5.0.0-beta.25",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-hook-form": "^7.54.2",
+    "recharts": "^2.15.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@storebridge/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@storebridge/database": "workspace:*",
+    "@storebridge/logger": "workspace:*",
+    "@storebridge/migration-core": "workspace:*",
+    "@storebridge/shared": "workspace:*",
+    "@storebridge/shopify-adapter": "workspace:*",
+    "@storebridge/woo-adapter": "workspace:*",
+    "bullmq": "^5.34.5",
+    "ioredis": "^5.4.2"
+  }
+}
