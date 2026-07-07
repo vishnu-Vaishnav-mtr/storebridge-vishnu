@@ -16,7 +16,7 @@ import { getWorkspaceData } from "@/lib/data";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const { organisation, metrics, progress, readiness, workerHealth } =
+  const { organisation, metrics, progress, readiness, health } =
     await getWorkspaceData();
   const activeMigration = organisation.migrations[0];
 
@@ -109,22 +109,39 @@ export default async function DashboardPage() {
           />
           <div className="grid gap-3">
             {[
-              "WooCommerce API",
-              "WordPress API",
-              "Shopify GraphQL API",
-              "PostgreSQL",
-              "Redis",
-              "Worker",
-              "Object Storage",
-              "Real-time updates",
+              {
+                label: "WooCommerce API",
+                status: connectionStatus(
+                  organisation.connections,
+                  "WOOCOMMERCE",
+                ),
+              },
+              {
+                label: "WordPress API",
+                status: connectionStatus(organisation.connections, "WORDPRESS"),
+              },
+              {
+                label: "Shopify GraphQL API",
+                status: connectionStatus(organisation.connections, "SHOPIFY"),
+              },
+              { label: "PostgreSQL", status: health.postgres.status },
+              { label: "Redis", status: health.redis.status },
+              { label: "Worker", status: health.worker.status },
+              {
+                label: "Object Storage",
+                status: process.env.OBJECT_STORAGE_PROVIDER
+                  ? "Not configured"
+                  : "Not configured",
+              },
+              { label: "Real-time updates", status: health.redis.status },
             ].map((item) => (
               <div
-                key={item}
+                key={item.label}
                 className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-4 py-3"
               >
-                <span className="text-sm">{item}</span>
-                <span className="text-sm text-green">
-                  {item === "Worker" ? workerHealth.status : "Unknown"}
+                <span className="text-sm">{item.label}</span>
+                <span className={`text-sm ${healthTone(item.status)}`}>
+                  {item.status}
                 </span>
               </div>
             ))}
@@ -214,4 +231,29 @@ function Empty({ title, body }: { title: string; body: string }) {
       <p className="mt-1 text-sm text-muted">{body}</p>
     </div>
   );
+}
+
+function connectionStatus(
+  connections: Array<{ platform: string; status: string }>,
+  platform: "WOOCOMMERCE" | "WORDPRESS" | "SHOPIFY",
+) {
+  const connection = connections.find(
+    (item) =>
+      item.platform === platform || item.platform === `DEMO_${platform}`,
+  );
+  if (!connection) return "Not configured";
+  if (connection.status === "CONNECTED") return "Healthy";
+  if (
+    connection.status === "CONNECTED_WITH_WARNINGS" ||
+    connection.status === "PERMISSION_MISSING"
+  )
+    return "Degraded";
+  return "Offline";
+}
+
+function healthTone(status: string) {
+  if (status === "Healthy") return "text-green";
+  if (status === "Degraded") return "text-warning";
+  if (status === "Offline") return "text-red-100";
+  return "text-muted";
 }

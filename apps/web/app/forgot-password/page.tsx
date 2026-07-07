@@ -1,11 +1,25 @@
+import Link from "next/link";
 import { AuthPage } from "@/components/auth-page";
 
 export default function ForgotPasswordPage() {
+  async function noop() {
+    "use server";
+  }
+
   return (
     <AuthPage
       title="Reset your password"
-      action="Send reset link"
-      footer="Remembered your password? Log in"
+      actionLabel="Send reset link"
+      mode="password"
+      formAction={noop}
+      footer={
+        <>
+          Remembered your password?{" "}
+          <Link className="font-semibold text-green" href="/login">
+            Log in
+          </Link>
+        </>
+      }
     />
   );
 }

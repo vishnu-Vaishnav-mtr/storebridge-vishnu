@@ -5,11 +5,19 @@ import {
   canTransitionMigration,
   migrationControlSchema,
 } from "@storebridge/shared";
+import { getCurrentMembership } from "@/lib/session";
 
 export async function POST(request: Request) {
+  const membership = await getCurrentMembership();
+  if (!membership)
+    return NextResponse.json(
+      { message: "Authentication required." },
+      { status: 401 },
+    );
+
   const input = migrationControlSchema.parse(await request.json());
-  const migration = await prisma.migration.findUnique({
-    where: { id: input.migrationId },
+  const migration = await prisma.migration.findFirst({
+    where: { id: input.migrationId, organisationId: membership.organisationId },
   });
   if (!migration)
     return NextResponse.json(

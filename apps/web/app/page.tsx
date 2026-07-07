@@ -7,6 +7,8 @@ import {
   Repeat2,
   ShieldCheck,
 } from "lucide-react";
+import { logoutAction } from "@/app/actions/auth";
+import { auth } from "@/auth";
 import { Button } from "@/components/ui/button";
 
 const capabilities = [
@@ -18,7 +20,9 @@ const capabilities = [
   "Downloadable audit, error, redirect and cutover reports",
 ];
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const session = await auth();
+
   return (
     <main className="min-h-screen bg-ink text-surface">
       <section className="blue-black-gradient relative overflow-hidden px-4 pb-10 pt-6 md:px-8">
@@ -30,10 +34,27 @@ export default function LandingPage() {
             <span className="text-lg font-bold">StoreBridge</span>
           </div>
           <div className="flex items-center gap-3">
-            <Button href="/dashboard" variant="ghost">
-              View Demo
-            </Button>
-            <Button href="/new-migration">Start a Migration</Button>
+            {session?.user ? (
+              <>
+                <Button href="/dashboard" variant="ghost">
+                  Dashboard
+                </Button>
+                <form action={logoutAction}>
+                  <Button type="submit" variant="secondary">
+                    Logout
+                  </Button>
+                </form>
+              </>
+            ) : (
+              <>
+                <Button href="/login" variant="ghost">
+                  Login
+                </Button>
+                <Button href="/register" variant="secondary">
+                  Register
+                </Button>
+              </>
+            )}
           </div>
         </nav>
 
@@ -57,8 +78,15 @@ export default function LandingPage() {
               <Button href="/new-migration">
                 Start a Migration <ArrowRight className="h-4 w-4" />
               </Button>
-              <Button href="/dashboard" variant="secondary">
-                View Demo
+              <Button
+                href={
+                  session?.user
+                    ? "/dashboard"
+                    : "/login?callbackUrl=%2Fdashboard"
+                }
+                variant="secondary"
+              >
+                {session?.user ? "Dashboard" : "Log in"}
               </Button>
             </div>
           </div>

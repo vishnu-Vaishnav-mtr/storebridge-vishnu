@@ -14,6 +14,8 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
+import { logoutAction } from "@/app/actions/auth";
+import { auth } from "@/auth";
 import { Button } from "./ui/button";
 
 const navigation = [
@@ -21,15 +23,15 @@ const navigation = [
   { label: "Stores", href: "/stores", icon: Store },
   { label: "New Migration", href: "/new-migration", icon: GitBranch },
   { label: "Migrations", href: "/migrations", icon: Layers3 },
-  { label: "Mappings", href: "/new-migration#mapping", icon: BarChart3 },
+  { label: "Mappings", href: "/mappings", icon: BarChart3 },
   { label: "Reports", href: "/reports", icon: FileText },
   { label: "Activity", href: "/activity", icon: Activity },
   { label: "Team", href: "/team", icon: Users },
   { label: "Settings", href: "/settings", icon: Settings },
-  { label: "Help", href: "/#workflow", icon: CircleHelp },
+  { label: "Help", href: "/help", icon: CircleHelp },
 ];
 
-export function AppShell({
+export async function AppShell({
   children,
   title,
   subtitle,
@@ -38,6 +40,8 @@ export function AppShell({
   title: string;
   subtitle?: string;
 }) {
+  const session = await auth();
+
   return (
     <div className="min-h-screen bg-ink text-surface">
       <aside className="fixed inset-y-0 left-0 hidden w-72 border-r border-white/10 bg-ink-2/95 p-4 lg:block">
@@ -89,6 +93,19 @@ export function AppShell({
                 />
               </label>
               <Button href="/new-migration">Create New Migration</Button>
+              {session?.user ? (
+                <form action={logoutAction} className="flex items-center gap-3">
+                  <div className="hidden text-right text-sm md:block">
+                    <p className="font-semibold">
+                      {session.user.name ?? session.user.email}
+                    </p>
+                    <p className="text-xs text-muted">{session.user.role}</p>
+                  </div>
+                  <Button type="submit" variant="secondary">
+                    Logout
+                  </Button>
+                </form>
+              ) : null}
             </div>
           </div>
         </header>

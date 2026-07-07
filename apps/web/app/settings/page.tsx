@@ -2,8 +2,11 @@ import { Lock, Moon, SlidersHorizontal, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { requireCurrentMembership } from "@/lib/session";
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  await requireCurrentMembership();
+
   return (
     <AppShell
       title="Settings"

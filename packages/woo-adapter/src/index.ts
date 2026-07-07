@@ -97,9 +97,7 @@ export class WooCommerceAdapter {
     ];
   }
 
-  async *products(
-    pageSize = 50,
-  ): AsyncGenerator<{
+  async *products(pageSize = 50): AsyncGenerator<{
     normalized: NormalizedProduct;
     raw: unknown;
     hash: string;

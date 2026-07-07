@@ -1,13 +1,32 @@
 import { NextResponse } from "next/server";
 import IORedis from "ioredis";
+import { prisma } from "@storebridge/database";
+import { getCurrentMembership } from "@/lib/session";
 
 export async function GET(request: Request) {
+  const membership = await getCurrentMembership();
+  if (!membership)
+    return NextResponse.json(
+      { error: "Authentication required." },
+      { status: 401 },
+    );
+
   const { searchParams } = new URL(request.url);
   const migrationId = searchParams.get("migrationId");
   if (!migrationId)
     return NextResponse.json(
       { error: "migrationId is required" },
       { status: 400 },
+    );
+
+  const migration = await prisma.migration.findFirst({
+    where: { id: migrationId, organisationId: membership.organisationId },
+    select: { id: true },
+  });
+  if (!migration)
+    return NextResponse.json(
+      { error: "Migration not found." },
+      { status: 404 },
     );
 
   const encoder = new TextEncoder();

@@ -10,8 +10,17 @@ import {
 } from "@storebridge/shared";
 import { ShopifyAdapter } from "@storebridge/shopify-adapter";
 import { WooCommerceAdapter } from "@storebridge/woo-adapter";
+import { getCurrentMembership } from "@/lib/session";
 
 export async function POST(request: Request) {
+  const membership = await getCurrentMembership();
+  if (!membership) {
+    return NextResponse.json(
+      { ok: false, error: "Authentication required." },
+      { status: 401 },
+    );
+  }
+
   const body = await request.json();
   const persist = body.persist === true;
   const encryptionKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
@@ -53,6 +62,7 @@ export async function POST(request: Request) {
             "CREDENTIAL_ENCRYPTION_KEY is required to save credentials.",
           );
         await saveConnection({
+          organisationId: membership.organisationId,
           platform: "WOOCOMMERCE",
           name: input.name,
           url: input.storeUrl,
@@ -92,6 +102,7 @@ export async function POST(request: Request) {
             "CREDENTIAL_ENCRYPTION_KEY is required to save credentials.",
           );
         await saveConnection({
+          organisationId: membership.organisationId,
           platform: "SHOPIFY",
           name: input.name,
           url: `https://${input.shopDomain}`,
@@ -137,6 +148,7 @@ export async function POST(request: Request) {
 }
 
 async function saveConnection(input: {
+  organisationId: string;
   platform: "WOOCOMMERCE" | "SHOPIFY";
   name: string;
   url: string;
@@ -146,15 +158,9 @@ async function saveConnection(input: {
   secrets: Record<string, string | undefined>;
   encryptionKey: string;
 }) {
-  const organisation =
-    (await prisma.organisation.findFirst()) ??
-    (await prisma.organisation.create({
-      data: { name: "Default Workspace", slug: "default-workspace" },
-    }));
-
   const connection = await prisma.storeConnection.create({
     data: {
-      organisationId: organisation.id,
+      organisationId: input.organisationId,
       name: input.name,
       platform: input.platform,
       status: input.status as never,

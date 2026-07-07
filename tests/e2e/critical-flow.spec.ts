@@ -1,18 +1,22 @@
 import { test, expect } from "@playwright/test";
 
-test("merchant can see the core StoreBridge workflow", async ({ page }) => {
+test("logged-out merchant sees public entry points and protected redirects", async ({
+  page,
+}) => {
   await page.goto("/");
   await expect(
     page.getByRole("heading", { name: "StoreBridge" }),
   ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Login" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Register" })).toBeVisible();
+
   await page.goto("/dashboard");
-  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await expect(page).toHaveURL(/\/login\?callbackUrl=%2Fdashboard/);
+  await expect(page.getByRole("button", { name: "Log in" })).toBeVisible();
+
   await page.goto("/stores");
-  await expect(page.getByText("WooCommerce source store")).toBeVisible();
-  await expect(page.getByText("Shopify destination store")).toBeVisible();
-  await page.goto("/new-migration");
-  await expect(page.getByText("1. Select Stores")).toBeVisible();
-  await expect(page.getByText("6. Dry Run and Import Files")).toBeVisible();
-  await page.goto("/migrations");
-  await expect(page.getByRole("heading", { name: "Migrations", level: 1 })).toBeVisible();
+  await expect(page).toHaveURL(/\/login\?callbackUrl=%2Fstores/);
+
+  await page.goto("/reports");
+  await expect(page).toHaveURL(/\/login\?callbackUrl=%2Freports/);
 });

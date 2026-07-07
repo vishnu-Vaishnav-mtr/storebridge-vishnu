@@ -2,6 +2,7 @@ import { ShieldCheck, UserPlus } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { requireCurrentMembership } from "@/lib/session";
 
 const roles = [
   ["OWNER", "Can manage billing, credentials and users."],
@@ -10,7 +11,9 @@ const roles = [
   ["VIEWER", "Can view status and reports only."],
 ];
 
-export default function TeamPage() {
+export default async function TeamPage() {
+  await requireCurrentMembership();
+
   return (
     <AppShell
       title="Team"
