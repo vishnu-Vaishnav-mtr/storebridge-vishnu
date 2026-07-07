@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { Queue } from "bullmq";
 import { prisma } from "@storebridge/database";
 import {
   canTransitionMigration,
   migrationControlSchema,
 } from "@storebridge/shared";
 import { getCurrentMembership } from "@/lib/session";
+import { enqueueMigrationJob } from "@/lib/migration-queue";
 
 export async function POST(request: Request) {
   const membership = await getCurrentMembership();
@@ -40,6 +40,15 @@ export async function POST(request: Request) {
     });
   }
 
+  if (input.action === "cancel") {
+    await prisma.migration.update({
+      where: { id: migration.id },
+      data: { status: "CANCELLED" },
+    });
+    await log(migration.id, "WARNING", "Migration cancelled by user.");
+    return NextResponse.json({ message: "Migration has been cancelled." });
+  }
+
   if (input.action === "resume") {
     if (!canTransitionMigration(migration.status as never, "RESUMING")) {
       return NextResponse.json(
@@ -47,7 +56,8 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
-    await enqueue("resume", migration.id);
+    const queued = await enqueueOrError("resume", migration.id);
+    if (queued) return queued;
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "RESUMING" },
@@ -58,7 +68,8 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "start") {
-    await enqueue("start", migration.id);
+    const queued = await enqueueOrError("start", migration.id);
+    if (queued) return queued;
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "QUEUED" },
@@ -67,7 +78,8 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "retry-failed") {
-    await enqueue("retry-failed", migration.id);
+    const queued = await enqueueOrError("retry-failed", migration.id);
+    if (queued) return queued;
     await log(
       migration.id,
       "INFO",
@@ -79,7 +91,8 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "verify") {
-    await enqueue("verify", migration.id);
+    const queued = await enqueueOrError("verify", migration.id);
+    if (queued) return queued;
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "VERIFYING" },
@@ -87,30 +100,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: "Verification has started." });
   }
 
-  await enqueue("dry-run", migration.id);
+  const queued = await enqueueOrError("dry-run", migration.id);
+  if (queued) return queued;
   await prisma.migration.update({
     where: { id: migration.id },
     data: { status: "DRY_RUNNING" },
   });
   return NextResponse.json({ message: "Dry run has started." });
-}
-
-async function enqueue(action: string, migrationId: string) {
-  const redisUrl = new URL(process.env.REDIS_URL ?? "redis://localhost:6379");
-  const connection = {
-    host: redisUrl.hostname,
-    port: Number(redisUrl.port || 6379),
-    username: redisUrl.username || undefined,
-    password: redisUrl.password || undefined,
-    maxRetriesPerRequest: null,
-  };
-  const queue = new Queue("migrations", { connection });
-  await queue.add(
-    action,
-    { migrationId, action },
-    { attempts: 3, backoff: { type: "exponential", delay: 1000 } },
-  );
-  await queue.close();
 }
 
 async function log(
@@ -119,4 +115,16 @@ async function log(
   message: string,
 ) {
   await prisma.migrationLog.create({ data: { migrationId, level, message } });
+}
+
+async function enqueueOrError(action: string, migrationId: string) {
+  try {
+    await enqueueMigrationJob(action, migrationId);
+    return null;
+  } catch {
+    return NextResponse.json(
+      { message: "Redis queue failure. Job was not queued." },
+      { status: 503 },
+    );
+  }
 }

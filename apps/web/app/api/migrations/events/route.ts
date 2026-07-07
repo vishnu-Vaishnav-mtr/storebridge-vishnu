@@ -30,11 +30,15 @@ export async function GET(request: Request) {
     );
 
   const encoder = new TextEncoder();
+  if (!process.env.REDIS_URL) {
+    return NextResponse.json(
+      { error: "Redis queue is not configured." },
+      { status: 503 },
+    );
+  }
   const stream = new ReadableStream({
     async start(controller) {
-      const redis = new IORedis(
-        process.env.REDIS_URL ?? "redis://localhost:6379",
-      );
+      const redis = new IORedis(process.env.REDIS_URL as string);
       const channel = `migration:${migrationId}:events`;
       await redis.subscribe(channel);
       controller.enqueue(

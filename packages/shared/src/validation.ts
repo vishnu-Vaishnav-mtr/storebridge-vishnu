@@ -26,6 +26,7 @@ export const migrationControlSchema = z.object({
     "start",
     "pause",
     "resume",
+    "cancel",
     "retry-failed",
     "verify",
     "dry-run",
