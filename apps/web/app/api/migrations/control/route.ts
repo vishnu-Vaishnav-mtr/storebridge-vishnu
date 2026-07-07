@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { Queue } from "bullmq";
 import { prisma } from "@storebridge/database";
 import {
   canTransitionMigration,
   migrationControlSchema,
 } from "@storebridge/shared";
 import { getCurrentMembership } from "@/lib/session";
+import { enqueueMigrationJob } from "@/lib/migration-queue";
 
 export async function POST(request: Request) {
   const membership = await getCurrentMembership();
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
-    await enqueue("resume", migration.id);
+    await enqueueMigrationJob("resume", migration.id);
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "RESUMING" },
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "start") {
-    await enqueue("start", migration.id);
+    await enqueueMigrationJob("start", migration.id);
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "QUEUED" },
@@ -67,7 +67,7 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "retry-failed") {
-    await enqueue("retry-failed", migration.id);
+    await enqueueMigrationJob("retry-failed", migration.id);
     await log(
       migration.id,
       "INFO",
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "verify") {
-    await enqueue("verify", migration.id);
+    await enqueueMigrationJob("verify", migration.id);
     await prisma.migration.update({
       where: { id: migration.id },
       data: { status: "VERIFYING" },
@@ -87,30 +87,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: "Verification has started." });
   }
 
-  await enqueue("dry-run", migration.id);
+  await enqueueMigrationJob("dry-run", migration.id);
   await prisma.migration.update({
     where: { id: migration.id },
     data: { status: "DRY_RUNNING" },
   });
   return NextResponse.json({ message: "Dry run has started." });
-}
-
-async function enqueue(action: string, migrationId: string) {
-  const redisUrl = new URL(process.env.REDIS_URL ?? "redis://localhost:6379");
-  const connection = {
-    host: redisUrl.hostname,
-    port: Number(redisUrl.port || 6379),
-    username: redisUrl.username || undefined,
-    password: redisUrl.password || undefined,
-    maxRetriesPerRequest: null,
-  };
-  const queue = new Queue("migrations", { connection });
-  await queue.add(
-    action,
-    { migrationId, action },
-    { attempts: 3, backoff: { type: "exponential", delay: 1000 } },
-  );
-  await queue.close();
 }
 
 async function log(

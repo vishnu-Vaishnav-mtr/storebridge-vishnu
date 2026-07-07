@@ -140,6 +140,11 @@ export async function processMigrationJob(
   const migration = await loadMigration(data.migrationId);
   if (!migration) throw new Error("Migration not found.");
 
+  if (jobName === "audit") {
+    await runSourceAudit(migration);
+    return;
+  }
+
   if (jobName === "dry-run") {
     await runDryRun(migration);
     return;
@@ -156,6 +161,77 @@ export async function processMigrationJob(
   }
 
   await runMigration(migration);
+}
+
+async function runSourceAudit(migration: MigrationWithConnections) {
+  await prisma.migration.update({
+    where: { id: migration.id },
+    data: { status: "AUDITING", currentStep: 2 },
+  });
+  await publishProgress(migration.id, "Source audit started.");
+
+  try {
+    const results = await collectAuditResults(migration);
+    await prisma.$transaction(async (tx) => {
+      await tx.auditResult.deleteMany({ where: { migrationId: migration.id } });
+      if (results.length > 0) {
+        await tx.auditResult.createMany({
+          data: results.map((result) => ({
+            migrationId: migration.id,
+            entityType: result.entityType as EntityType,
+            detectedCount: result.detectedCount,
+            supportedCount: result.supportedCount,
+            needsMapping: result.needsMapping,
+            warningCount: result.warningCount,
+            unsupportedCount: result.unsupportedCount,
+            warnings: result.warnings,
+          })),
+        });
+      }
+      await tx.report.create({
+        data: {
+          migrationId: migration.id,
+          type: "SOURCE_AUDIT",
+          format: "JSON",
+          title: "Source audit report",
+          content: {
+            results: results as unknown as Prisma.InputJsonValue,
+            generatedAt: new Date().toISOString(),
+          },
+        },
+      });
+      await tx.migration.update({
+        where: { id: migration.id },
+        data: {
+          status: "READY",
+          currentStep: 3,
+          totalRecords: results.reduce(
+            (sum, result) => sum + result.supportedCount,
+            0,
+          ),
+        },
+      });
+    });
+    await publishProgress(migration.id, "Source audit completed.");
+  } catch (error) {
+    await prisma.migration.update({
+      where: { id: migration.id },
+      data: { status: "FAILED" },
+    });
+    await prisma.migrationError.create({
+      data: {
+        migrationId: migration.id,
+        category: "SOURCE_DATA",
+        stage: "audit",
+        message:
+          error instanceof Error ? error.message : "Source audit failed.",
+        retryable: false,
+        technicalDetails:
+          error instanceof Error ? { name: error.name, stack: error.stack } : {},
+      },
+    });
+    await publishProgress(migration.id, "Source audit failed.");
+  }
 }
 
 export async function runMigrationPipeline(input: {
@@ -385,6 +461,45 @@ async function runDryRun(migration: MigrationWithConnections) {
     data: { status: result.paused ? "PAUSED" : "DRY_RUN_COMPLETE" },
   });
   await publishProgress(migration.id, "Dry run completed.");
+}
+
+async function collectAuditResults(migration: MigrationWithConnections) {
+  if (migration.sourceConnection.platform === "WOOCOMMERCE") {
+    const woo = new WooCommerceAdapter({
+      storeUrl: migration.sourceConnection.url,
+      consumerKey: credential(migration.sourceConnection, "consumerKey"),
+      consumerSecret: credential(migration.sourceConnection, "consumerSecret"),
+      apiVersion: migration.sourceConnection.apiVersion ?? "wc/v3",
+      allowPrivateNetwork: process.env.ALLOW_PRIVATE_NETWORK_URLS === "true",
+    });
+    const wooResults = await woo.audit();
+    const wordpress = new WordPressAdapter(
+      withDefined({
+        storeUrl: migration.sourceConnection.url,
+        username: credentialOptional(
+          migration.sourceConnection,
+          "wordpressUsername",
+        ),
+        applicationPassword: credentialOptional(
+          migration.sourceConnection,
+          "wordpressApplicationPassword",
+        ),
+        allowPrivateNetwork: process.env.ALLOW_PRIVATE_NETWORK_URLS === "true",
+      }),
+    );
+    const wpResults = await wordpress.auditContent().catch(() => []);
+    return mergeAuditResults([...wooResults, ...wpResults]);
+  }
+
+  if (migration.sourceConnection.platform === "WORDPRESS") {
+    const wordpress = new WordPressAdapter({
+      storeUrl: migration.sourceConnection.url,
+      allowPrivateNetwork: process.env.ALLOW_PRIVATE_NETWORK_URLS === "true",
+    });
+    return wordpress.auditContent();
+  }
+
+  throw new Error("Unsupported source platform for audit.");
 }
 
 async function runMigration(migration: MigrationWithConnections) {
@@ -1063,6 +1178,34 @@ function withDefined<T extends Record<string, unknown>>(input: T) {
       undefined | null
     >;
   };
+}
+
+function mergeAuditResults(
+  results: Array<{
+    entityType: string;
+    detectedCount: number;
+    supportedCount: number;
+    needsMapping: number;
+    warningCount: number;
+    unsupportedCount: number;
+    warnings: string[];
+  }>,
+) {
+  const merged = new Map<string, (typeof results)[number]>();
+  for (const result of results) {
+    const existing = merged.get(result.entityType);
+    if (!existing) {
+      merged.set(result.entityType, { ...result });
+      continue;
+    }
+    existing.detectedCount += result.detectedCount;
+    existing.supportedCount += result.supportedCount;
+    existing.needsMapping += result.needsMapping;
+    existing.warningCount += result.warningCount;
+    existing.unsupportedCount += result.unsupportedCount;
+    existing.warnings.push(...result.warnings);
+  }
+  return [...merged.values()];
 }
 
 export function sourceHash(record: unknown) {
