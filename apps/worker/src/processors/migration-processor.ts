@@ -234,7 +234,15 @@ async function runSourceAudit(migration: MigrationWithConnections) {
           ),
         },
       });
-    });
+      await tx.migrationError.updateMany({
+        where: {
+          migrationId: migration.id,
+          stage: "audit",
+          resolvedAt: null,
+        },
+        data: { resolvedAt: new Date() },
+      });
+    }, { maxWait: 15_000, timeout: 30_000 });
     await publishProgress(migration.id, "Source audit completed.");
   } catch (error) {
     await prisma.migration.update({
@@ -248,7 +256,7 @@ async function runSourceAudit(migration: MigrationWithConnections) {
         stage: "audit",
         message:
           error instanceof Error ? error.message : "Source audit failed.",
-        retryable: false,
+        retryable: classifyError(error).retryable,
         technicalDetails:
           error instanceof Error ? { name: error.name, stack: error.stack } : {},
       },
