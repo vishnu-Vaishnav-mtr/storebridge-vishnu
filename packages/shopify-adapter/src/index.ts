@@ -12,6 +12,7 @@ import type {
   NormalizedSeoFields,
   NormalizedVariant,
 } from "@storebridge/shared";
+import { stableHash } from "@storebridge/shared";
 
 export interface ShopifyConnectionOptions {
   shopDomain: string;
@@ -279,12 +280,9 @@ export class ShopifyAdapter {
     image: NormalizedImage & { productSourceId: string },
     productGid: string,
     sourceId: string,
+    existingDestinationGid?: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
-    const existing = await this.findBySourceMetafield(
-      "files",
-      "source_media_id",
-      sourceId,
-    );
+    const existing = existingDestinationGid;
     if (existing) return { gid: existing, duplicatePrevented: true };
     const response = await this.graphql<{
       productCreateMedia: {
@@ -383,15 +381,24 @@ export class ShopifyAdapter {
     inventoryItemGid: string,
     locationGid: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
+    const activationKey = stableHash({
+      action: "inventory-activate",
+      inventoryItemGid,
+      locationGid,
+    });
     const activation = await this.graphql<{
       inventoryActivate: { userErrors: Array<{ message: string }> };
     }>(
-      `mutation StoreBridgeInventoryActivate($inventoryItemId: ID!, $locationId: ID!) {
-        inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+      `mutation StoreBridgeInventoryActivate($inventoryItemId: ID!, $locationId: ID!, $idempotencyKey: String!) {
+        inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) @idempotent(key: $idempotencyKey) {
           userErrors { message }
         }
       }`,
-      { inventoryItemId: inventoryItemGid, locationId: locationGid },
+      {
+        inventoryItemId: inventoryItemGid,
+        locationId: locationGid,
+        idempotencyKey: activationKey,
+      },
     );
     const activationError = activation.inventoryActivate.userErrors[0];
     if (activationError && !/already|active/i.test(activationError.message)) {
@@ -404,13 +411,20 @@ export class ShopifyAdapter {
         userErrors: Array<{ message: string }>;
       };
     }>(
-      `mutation StoreBridgeInventorySet($input: InventorySetQuantitiesInput!) {
-        inventorySetQuantities(input: $input) {
+      `mutation StoreBridgeInventorySet($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
+        inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {
           inventoryAdjustmentGroup { id }
           userErrors { message }
         }
       }`,
       {
+        idempotencyKey: stableHash({
+          action: "inventory-set",
+          inventoryItemGid,
+          locationGid,
+          quantity: inventory.quantity,
+          sourceId: inventory.sourceId,
+        }),
         input: {
           name: "available",
           reason: "correction",
@@ -784,7 +798,12 @@ export class ShopifyAdapter {
     productGid: string,
     product: NormalizedProduct,
   ) {
-    if (!product.sku && !product.price && !product.compareAtPrice) return;
+    if (
+      !product.sku &&
+      !optionalMoney(product.price) &&
+      !optionalMoney(product.compareAtPrice)
+    )
+      return;
     const response = await this.graphql<{
       product: { variants: { nodes: Array<{ id: string }> } } | null;
     }>(
@@ -808,8 +827,8 @@ export class ShopifyAdapter {
         variants: [
           withDefined({
             id: variantGid,
-            price: product.price,
-            compareAtPrice: product.compareAtPrice,
+            price: optionalMoney(product.price),
+            compareAtPrice: optionalMoney(product.compareAtPrice),
             inventoryItem: withDefined({ sku: product.sku, tracked: true }),
           }),
         ],
@@ -964,8 +983,8 @@ function variantInput(
 ) {
   return withDefined({
     id,
-    price: variant.price,
-    compareAtPrice: variant.compareAtPrice,
+    price: optionalMoney(variant.price),
+    compareAtPrice: optionalMoney(variant.compareAtPrice),
     inventoryItem: withDefined({ sku: variant.sku, tracked: true }),
     optionValues: id ? undefined : variant.optionValues,
     metafields: sourceId
@@ -975,6 +994,11 @@ function variantInput(
         ]
       : undefined,
   });
+}
+
+function optionalMoney(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
 }
 
 function seoInput(seo: NormalizedSeoFields | undefined) {

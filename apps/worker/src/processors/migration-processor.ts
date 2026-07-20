@@ -958,10 +958,15 @@ function mediaDefinition(
         record.url,
         "url",
       ),
-    migrate: async (record, context) => {
+    migrate: async (record, context, existingDestinationGid) => {
       const productGid = await context.findMapping("PRODUCT", record.productSourceId);
       if (!productGid) throw mappingError("PRODUCT", record.productSourceId);
-      return context.shopify.upsertProductImage(record, productGid, record.sourceId);
+      return context.shopify.upsertProductImage(
+        record,
+        productGid,
+        record.sourceId,
+        existingDestinationGid,
+      );
     },
   };
 }
