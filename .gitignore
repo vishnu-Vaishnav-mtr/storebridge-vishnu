@@ -8,6 +8,6 @@ test-results
 .env.local
 *.log
 uploads
-reports
+/reports/
 .turbo
 *.tsbuildinfo

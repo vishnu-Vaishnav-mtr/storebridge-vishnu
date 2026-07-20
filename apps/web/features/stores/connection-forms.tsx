@@ -3,7 +3,6 @@
 import { useState } from "react";
 import {
   CheckCircle2,
-  ExternalLink,
   KeyRound,
   PlugZap,
   Save,
@@ -142,26 +141,7 @@ export function ShopifyConnectionForm() {
       }}
     >
       <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-        <p className="font-semibold">Method A: Shopify OAuth</p>
-        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto]">
-          <Field
-            name="oauthShopDomain"
-            label="Shop domain"
-            placeholder="your-store.myshopify.com"
-          />
-          <Button
-            type="button"
-            variant="secondary"
-            className="self-end opacity-60"
-            disabled
-            title="Shopify OAuth is not configured for this deployment. Use a custom app token."
-          >
-            <ExternalLink className="h-4 w-4" /> OAuth unavailable
-          </Button>
-        </div>
-      </div>
-      <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-        <p className="font-semibold">Method B: Custom app token</p>
+        <p className="font-semibold">Shopify Dev Dashboard app</p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <Field
             name="name"
@@ -173,12 +153,8 @@ export function ShopifyConnectionForm() {
             label="Shopify store domain"
             placeholder="your-store.myshopify.com"
           />
-          <Field
-            name="adminAccessToken"
-            label="Admin API access token"
-            type="password"
-            placeholder="shpat_••••••••91AB"
-          />
+          <Field name="clientId" label="Client ID" />
+          <Field name="clientSecret" label="Client Secret" type="password" />
           <Field name="apiVersion" label="API version" defaultValue="2026-01" />
         </div>
       </div>
@@ -187,12 +163,12 @@ export function ShopifyConnectionForm() {
         onSave={(form) => void submit(new FormData(form), true)}
       />
       <HowTo
-        title="How to create a Shopify custom app token"
+        title="Where to get Shopify credentials"
         steps={[
-          "Open Shopify admin settings.",
-          "Go to Apps and sales channels → Develop apps.",
-          "Create a custom app and grant required Admin API scopes.",
-          "Install the app and paste the Admin API access token here.",
+          "Create and release the app in Shopify Dev Dashboard.",
+          "Install it on the destination store.",
+          "Open the app's Settings page.",
+          "Paste its Client ID and Client Secret here.",
         ]}
       />
       <ConnectionResult result={result} />

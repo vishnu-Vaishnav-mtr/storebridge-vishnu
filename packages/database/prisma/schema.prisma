@@ -18,8 +18,6 @@ enum StorePlatform {
   WOOCOMMERCE
   SHOPIFY
   WORDPRESS
-  DEMO_WOOCOMMERCE
-  DEMO_SHOPIFY
 }
 
 enum ConnectionStatus {

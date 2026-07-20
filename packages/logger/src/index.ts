@@ -11,6 +11,7 @@ export const logger = pino({
       "*.consumerKey",
       "*.consumerSecret",
       "*.adminAccessToken",
+      "*.clientSecret",
       "req.headers.authorization",
     ],
     censor: "[REDACTED]",

@@ -7,7 +7,6 @@ import {
   GitBranch,
   Home,
   Layers3,
-  Search,
   Settings,
   ShieldCheck,
   Store,
@@ -16,6 +15,7 @@ import {
 import Link from "next/link";
 import { logoutAction } from "@/app/actions/auth";
 import { auth } from "@/auth";
+import { GlobalSearch } from "./global-search";
 import { Button } from "./ui/button";
 
 const navigation = [
@@ -28,7 +28,7 @@ const navigation = [
   { label: "Activity", href: "/activity", icon: Activity },
   { label: "Team", href: "/team", icon: Users },
   { label: "Settings", href: "/settings", icon: Settings },
-  { label: "Help", href: "/help", icon: CircleHelp },
+  { label: "Migration Guide", href: "/guide", icon: CircleHelp },
 ];
 
 export async function AppShell({
@@ -85,13 +85,7 @@ export async function AppShell({
               ) : null}
             </div>
             <div className="flex items-center gap-3">
-              <label className="hidden min-w-72 items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-muted md:flex">
-                <Search className="h-4 w-4" />
-                <input
-                  className="w-full bg-transparent outline-none placeholder:text-muted"
-                  placeholder="Search migrations, stores, reports"
-                />
-              </label>
+              <GlobalSearch />
               <Button href="/new-migration">Create New Migration</Button>
               {session?.user ? (
                 <form action={logoutAction} className="flex items-center gap-3">

@@ -4,7 +4,7 @@ import {
   canTransitionMigration,
   migrationControlSchema,
 } from "@storebridge/shared";
-import { getCurrentMembership } from "@/lib/session";
+import { canOperateMigrations, getCurrentMembership } from "@/lib/session";
 import { enqueueMigrationJob } from "@/lib/migration-queue";
 
 export async function POST(request: Request) {
@@ -13,6 +13,11 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { message: "Authentication required." },
       { status: 401 },
+    );
+  if (!canOperateMigrations(membership.role))
+    return NextResponse.json(
+      { message: "Insufficient permissions." },
+      { status: 403 },
     );
 
   const input = migrationControlSchema.parse(await request.json());
@@ -56,24 +61,26 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
-    const queued = await enqueueOrError("resume", migration.id);
+    const queued = await enqueueOrError(
+      "resume",
+      migration.id,
+      "RESUMING",
+      migration.status,
+    );
     if (queued) return queued;
-    await prisma.migration.update({
-      where: { id: migration.id },
-      data: { status: "RESUMING" },
-    });
     return NextResponse.json({
       message: "Migration is resuming from the last checkpoint.",
     });
   }
 
   if (input.action === "start") {
-    const queued = await enqueueOrError("start", migration.id);
+    const queued = await enqueueOrError(
+      "start",
+      migration.id,
+      "QUEUED",
+      migration.status,
+    );
     if (queued) return queued;
-    await prisma.migration.update({
-      where: { id: migration.id },
-      data: { status: "QUEUED" },
-    });
     return NextResponse.json({ message: "Migration has been queued." });
   }
 
@@ -91,21 +98,23 @@ export async function POST(request: Request) {
   }
 
   if (input.action === "verify") {
-    const queued = await enqueueOrError("verify", migration.id);
+    const queued = await enqueueOrError(
+      "verify",
+      migration.id,
+      "VERIFYING",
+      migration.status,
+    );
     if (queued) return queued;
-    await prisma.migration.update({
-      where: { id: migration.id },
-      data: { status: "VERIFYING" },
-    });
     return NextResponse.json({ message: "Verification has started." });
   }
 
-  const queued = await enqueueOrError("dry-run", migration.id);
+  const queued = await enqueueOrError(
+    "dry-run",
+    migration.id,
+    "DRY_RUNNING",
+    migration.status,
+  );
   if (queued) return queued;
-  await prisma.migration.update({
-    where: { id: migration.id },
-    data: { status: "DRY_RUNNING" },
-  });
   return NextResponse.json({ message: "Dry run has started." });
 }
 
@@ -117,11 +126,28 @@ async function log(
   await prisma.migrationLog.create({ data: { migrationId, level, message } });
 }
 
-async function enqueueOrError(action: string, migrationId: string) {
+async function enqueueOrError(
+  action: string,
+  migrationId: string,
+  pendingStatus?: Parameters<typeof prisma.migration.update>[0]["data"]["status"],
+  previousStatus?: Parameters<typeof prisma.migration.update>[0]["data"]["status"],
+) {
   try {
+    if (pendingStatus) {
+      await prisma.migration.update({
+        where: { id: migrationId },
+        data: { status: pendingStatus },
+      });
+    }
     await enqueueMigrationJob(action, migrationId);
     return null;
   } catch {
+    if (pendingStatus && previousStatus) {
+      await prisma.migration.update({
+        where: { id: migrationId },
+        data: { status: previousStatus },
+      });
+    }
     return NextResponse.json(
       { message: "Redis queue failure. Job was not queued." },
       { status: 503 },

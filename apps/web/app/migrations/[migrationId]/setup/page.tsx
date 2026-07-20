@@ -4,9 +4,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import {
-  resetMappingRulesAction,
   runMigrationJobAction,
-  saveMappingRulesAction,
   startAuditAction,
   updateMigrationModulesAction,
   updateMigrationStoresAction,
@@ -289,29 +287,12 @@ export default async function MigrationSetupPage({
         <Card>
           <CardHeader
             title="4. Configure Mapping"
-            description="Suggested rules are persisted and consumed by the worker."
+            description="Categories and product attributes are mapped from the source records discovered by the audit."
           />
-          <form action={saveMappingRulesAction} className="grid gap-3">
-            <input type="hidden" name="migrationId" value={migration.id} />
-            <input type="hidden" name="ruleCount" value="8" />
-            {defaultMappingSuggestions.map((rule, index) => (
-              <MappingRuleRow key={rule.sourceKey} rule={rule} index={index} />
-            ))}
-            <Button
-              type="submit"
-              variant="secondary"
-              disabled={migration.currentStep < 3}
-              className="w-fit"
-            >
-              Save Mappings
-            </Button>
-          </form>
-          <form action={resetMappingRulesAction} className="mt-3">
-            <input type="hidden" name="migrationId" value={migration.id} />
-            <Button type="submit" variant="ghost">
-              Reset Mappings
-            </Button>
-          </form>
+          <p className="rounded-xl border border-green/30 bg-green/10 p-3 text-sm text-green">
+            WooCommerce categories become Shopify collections, product attributes
+            become options, and source IDs are retained for reconciliation.
+          </p>
           <div className="mt-4 grid gap-2">
             {migration.mappingRules.length ? (
               migration.mappingRules.map((rule) => (
@@ -460,111 +441,6 @@ function Notice({
     >
       <AlertTriangle className="mr-2 inline h-4 w-4" />
       {message}
-    </div>
-  );
-}
-
-const defaultMappingSuggestions = [
-  {
-    ruleType: "CATEGORY",
-    sourceKey: "WooCommerce category",
-    targetKey: "Shopify collection",
-    action: "COLLECTION",
-  },
-  {
-    ruleType: "ATTRIBUTE",
-    sourceKey: "WooCommerce attribute",
-    targetKey: "Shopify product option",
-    action: "OPTION",
-  },
-  {
-    ruleType: "CUSTOM_FIELD",
-    sourceKey: "WooCommerce custom field",
-    targetKey: "Shopify metafield",
-    action: "METAFIELD",
-  },
-  {
-    ruleType: "WORDPRESS_PAGE",
-    sourceKey: "WordPress page",
-    targetKey: "Shopify page",
-    action: "PAGE",
-  },
-  {
-    ruleType: "WORDPRESS_POST",
-    sourceKey: "WordPress post",
-    targetKey: "Shopify blog/article",
-    action: "BLOG_ARTICLE",
-  },
-  {
-    ruleType: "WORDPRESS_CATEGORY",
-    sourceKey: "WordPress category",
-    targetKey: "Shopify blog tag",
-    action: "TAG",
-  },
-  {
-    ruleType: "ORDER_STATUS",
-    sourceKey: "WooCommerce order status",
-    targetKey: "Imported-order metadata",
-    action: "ORDER_METADATA",
-  },
-  {
-    ruleType: "UNSUPPORTED_DATA",
-    sourceKey: "Unsupported coupon/review/plugin data",
-    targetKey: "Compatibility report",
-    action: "REPORT_UNSUPPORTED",
-  },
-] as const;
-
-function MappingRuleRow({
-  rule,
-  index,
-}: {
-  rule: (typeof defaultMappingSuggestions)[number];
-  index: number;
-}) {
-  return (
-    <div className="grid gap-2 rounded-xl border border-white/10 bg-white/5 p-3 text-sm md:grid-cols-[1fr_1fr_180px]">
-      <input type="hidden" name={`rules.${index}.ruleType`} value={rule.ruleType} />
-      <label className="grid gap-1">
-        <span className="text-muted">Source</span>
-        <input
-          name={`rules.${index}.sourceKey`}
-          defaultValue={rule.sourceKey}
-          className="focus-ring rounded-xl border border-white/10 bg-ink px-3 py-2"
-        />
-      </label>
-      <label className="grid gap-1">
-        <span className="text-muted">Target</span>
-        <input
-          name={`rules.${index}.targetKey`}
-          defaultValue={rule.targetKey}
-          className="focus-ring rounded-xl border border-white/10 bg-ink px-3 py-2"
-        />
-      </label>
-      <label className="grid gap-1">
-        <span className="text-muted">Action</span>
-        <select
-          name={`rules.${index}.action`}
-          defaultValue={rule.action}
-          className="focus-ring rounded-xl border border-white/10 bg-ink px-3 py-2"
-        >
-          {[
-            "COLLECTION",
-            "OPTION",
-            "METAFIELD",
-            "TAG",
-            "PAGE",
-            "BLOG_ARTICLE",
-            "ORDER_METADATA",
-            "REPORT_UNSUPPORTED",
-            "SKIP",
-          ].map((action) => (
-            <option key={action} value={action}>
-              {action}
-            </option>
-          ))}
-        </select>
-      </label>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@storebridge/database";
 import { recheckStoreConnection } from "@/lib/connection-checks";
-import { getCurrentMembership } from "@/lib/session";
+import { canManageConnections, getCurrentMembership } from "@/lib/session";
 
 export async function PATCH(
   request: Request,
@@ -12,6 +12,12 @@ export async function PATCH(
     return NextResponse.json(
       { ok: false, error: "Authentication required." },
       { status: 401 },
+    );
+  }
+  if (!canManageConnections(membership.role)) {
+    return NextResponse.json(
+      { ok: false, error: "Insufficient permissions." },
+      { status: 403 },
     );
   }
 

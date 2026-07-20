@@ -144,7 +144,8 @@ export class WordPressAdapter {
     absolutePath = false,
   ): AsyncGenerator<Record<string, unknown>> {
     let page = 1;
-    while (true) {
+    let totalPages = 1;
+    while (page <= totalPages) {
       const url = absolutePath ? new URL(`/wp-json/${endpoint}`, this.baseUrl) : this.url(endpoint);
       url.searchParams.set("page", String(page));
       url.searchParams.set("per_page", String(pageSize));
@@ -152,7 +153,11 @@ export class WordPressAdapter {
       if (absolutePath && response.status === 404) return;
       if (!response.ok) throw new Error(`WordPress returned ${response.status}.`);
       const rows = (await response.json()) as Array<Record<string, unknown>>;
-      if (!Array.isArray(rows) || rows.length === 0) return;
+      if (!Array.isArray(rows)) return;
+      totalPages = Math.max(
+        1,
+        Number(response.headers.get("x-wp-totalpages") ?? totalPages),
+      );
       for (const row of rows) yield row;
       page += 1;
     }

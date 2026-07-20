@@ -16,7 +16,6 @@ export const envSchema = z.object({
   SHOPIFY_CLIENT_SECRET: z.string().optional(),
   SHOPIFY_API_VERSION: z.string().default("2026-01"),
   LOG_LEVEL: z.string().default("info"),
-  DEMO_MODE: z.coerce.boolean().default(false),
   ALLOW_PRIVATE_NETWORK_URLS: z.coerce.boolean().default(false),
 });
 

@@ -44,9 +44,15 @@ type EntityDefinition<T> = {
   sourceId: (record: T) => string;
   records: () => AsyncGenerator<SourceRecord<T>>;
   validate: (record: T) => string[];
-  migrate: (record: T, context: MigrationContext) => Promise<MigrationResult>;
+  migrate: (
+    record: T,
+    context: MigrationContext,
+    existingDestinationGid?: string,
+  ) => Promise<MigrationResult>;
 };
 
+// Entity definitions intentionally share one heterogeneous execution pipeline.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyEntityDefinition = EntityDefinition<any>;
 
 type MigrationResult = {
@@ -64,6 +70,7 @@ type ShopifyDestination = Pick<
   ShopifyAdapter,
   | "resourceExists"
   | "upsertProduct"
+  | "addProductToCollections"
   | "upsertCollection"
   | "upsertProductImage"
   | "upsertVariant"
@@ -81,6 +88,10 @@ type ShopifyDestination = Pick<
 
 type MigrationStore = {
   findMapping(entityType: EntityType, sourceId: string): Promise<string | null>;
+  findMappingRecord?(
+    entityType: EntityType,
+    sourceId: string,
+  ): Promise<{ destinationGid: string; sourceHash: string | null } | null>;
   upsertRecord(input: UpsertRecordInput): Promise<{ id: string }>;
   upsertMapping(input: {
     entityType: EntityType;
@@ -167,7 +178,12 @@ export async function processMigrationJob(
     return;
   }
 
-  await runMigration(migration);
+  if (jobName === "start" || jobName === "resume") {
+    await runMigration(migration);
+    return;
+  }
+
+  throw new Error(`Unsupported migration job action: ${jobName}.`);
 }
 
 async function runSourceAudit(migration: MigrationWithConnections) {
@@ -350,11 +366,17 @@ export async function runMigrationPipeline(input: {
         continue;
       }
 
-      const existingGid = await input.store.findMapping(
-        definition.entityType,
-        sourceId,
-      );
-      if (existingGid && (await input.shopify.resourceExists(existingGid))) {
+      const existingMapping = input.store.findMappingRecord
+        ? await input.store.findMappingRecord(definition.entityType, sourceId)
+        : null;
+      const existingGid =
+        existingMapping?.destinationGid ??
+        (await input.store.findMapping(definition.entityType, sourceId));
+      if (
+        existingGid &&
+        existingMapping?.sourceHash === source.hash &&
+        (await input.shopify.resourceExists(existingGid))
+      ) {
         await input.store.upsertRecord({
           entityType: definition.entityType,
           sourceId,
@@ -378,7 +400,11 @@ export async function runMigrationPipeline(input: {
       }
 
       try {
-        const result = await definition.migrate(mappedRecord, context);
+        const result = await definition.migrate(
+          mappedRecord,
+          context,
+          existingGid ?? undefined,
+        );
         assertRealShopifyGid(result.gid);
         const status = result.duplicatePrevented
           ? "DUPLICATE_PREVENTED"
@@ -449,6 +475,9 @@ export async function runMigrationPipeline(input: {
 }
 
 async function runDryRun(migration: MigrationWithConnections) {
+  await prisma.migrationCheckpoint.deleteMany({
+    where: { migrationId: migration.id },
+  });
   await prisma.migration.update({
     where: { id: migration.id },
     data: { status: "DRY_RUNNING", processedRecords: 0, failedRecords: 0 },
@@ -458,15 +487,31 @@ async function runDryRun(migration: MigrationWithConnections) {
     "Dry run started. StoreBridge is reading source data without writing to Shopify.",
   );
 
-  const definitions = await createEntityDefinitions(migration);
-  const result = await runMigrationPipeline({
-    migrationId: migration.id,
-    definitions,
-    shopify: await createShopifyAdapter(migration),
-    store: prismaMigrationStore(migration.id),
-    dryRun: true,
-    publish: (message) => publishProgress(migration.id, message),
-  });
+  let result: { paused: boolean };
+  try {
+    const definitions = await createEntityDefinitions(migration);
+    result = await runMigrationPipeline({
+      migrationId: migration.id,
+      definitions,
+      shopify: await createShopifyAdapter(migration),
+      store: prismaMigrationStore(migration.id),
+      dryRun: true,
+      publish: (message) => publishProgress(migration.id, message),
+    });
+  } catch (error) {
+    await prisma.migration.update({
+      where: { id: migration.id },
+      data: { status: "FAILED" },
+    });
+    await publishProgress(migration.id, "Dry run failed before completion.");
+    throw error;
+  } finally {
+    // Dry-run cursors must never be reused by the write pipeline, including
+    // when reading the source fails midway through pagination.
+    await prisma.migrationCheckpoint.deleteMany({
+      where: { migrationId: migration.id },
+    });
+  }
 
   await prisma.validationResult.create({
     data: {
@@ -520,11 +565,18 @@ async function collectAuditResults(migration: MigrationWithConnections) {
           migration.sourceConnection,
           "wordpressApplicationPassword",
         ),
+        basePath: metadataString(
+          migration.sourceConnection.metadata,
+          "wordpressBaseUrl",
+        ),
         allowPrivateNetwork: process.env.ALLOW_PRIVATE_NETWORK_URLS === "true",
       }),
     );
     const wpResults = await wordpress.auditContent().catch(() => []);
-    return mergeAuditResults([...wooResults, ...wpResults]);
+    return mergeAuditResults([
+      ...wooResults,
+      ...wpResults.filter((result) => ["PAGE", "POST"].includes(result.entityType)),
+    ]);
   }
 
   if (migration.sourceConnection.platform === "WORDPRESS") {
@@ -539,26 +591,37 @@ async function collectAuditResults(migration: MigrationWithConnections) {
 }
 
 async function runMigration(migration: MigrationWithConnections) {
+  const freshStart = migration.status === "QUEUED";
   await prisma.migration.update({
     where: { id: migration.id },
     data: {
       status: "RUNNING",
       startedAt: migration.startedAt ?? new Date(),
-      processedRecords: 0,
-      failedRecords: 0,
-      duplicatesPrevented: 0,
+      ...(freshStart
+        ? { processedRecords: 0, failedRecords: 0, duplicatesPrevented: 0 }
+        : {}),
     },
   });
   await publishProgress(migration.id, "Migration started.");
 
-  const definitions = await createEntityDefinitions(migration);
-  const result = await runMigrationPipeline({
-    migrationId: migration.id,
-    definitions,
-    shopify: await createShopifyAdapter(migration),
-    store: prismaMigrationStore(migration.id),
-    publish: (message) => publishProgress(migration.id, message),
-  });
+  let result: { paused: boolean };
+  try {
+    const definitions = await createEntityDefinitions(migration);
+    result = await runMigrationPipeline({
+      migrationId: migration.id,
+      definitions,
+      shopify: await createShopifyAdapter(migration),
+      store: prismaMigrationStore(migration.id),
+      publish: (message) => publishProgress(migration.id, message),
+    });
+  } catch (error) {
+    await prisma.migration.update({
+      where: { id: migration.id },
+      data: { status: "FAILED" },
+    });
+    await publishProgress(migration.id, "Migration stopped after a fatal source or service error.");
+    throw error;
+  }
   if (result.paused) return;
 
   const final = await prisma.migration.findUnique({
@@ -610,21 +673,61 @@ async function verifyMigration(
   shopify: Pick<ShopifyDestination, "resourceExists">,
 ) {
   await publishProgress(migrationId, "Verification started.");
-  const mappings = await prisma.entityMapping.findMany({ where: { migrationId } });
+  const migration = await prisma.migration.findUniqueOrThrow({
+    where: { id: migrationId },
+    include: {
+      auditResults: true,
+      modules: true,
+      records: true,
+      mappings: true,
+    },
+  });
+  const enabled = new Set(
+    migration.modules.filter((module) => module.enabled).map((module) => module.entityType),
+  );
   const rows = new Map<
     string,
     { entity: string; source: number; migrated: number; updated: number; skipped: number; failed: number }
   >();
 
-  for (const mapping of mappings) {
-    const key = mapping.entityType;
+  for (const audit of migration.auditResults) {
+    if (!enabled.has(audit.entityType)) continue;
+    rows.set(audit.entityType, {
+      entity: audit.entityType,
+      source: audit.supportedCount,
+      migrated: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+    });
+  }
+
+  for (const record of migration.records) {
+    if (!enabled.has(record.entityType)) continue;
     const row =
-      rows.get(key) ??
-      { entity: key, source: 0, migrated: 0, updated: 0, skipped: 0, failed: 0 };
-    row.source += 1;
-    if (await shopify.resourceExists(mapping.destinationGid)) row.migrated += 1;
-    else row.failed += 1;
-    rows.set(key, row);
+      rows.get(record.entityType) ??
+      { entity: record.entityType, source: 0, migrated: 0, updated: 0, skipped: 0, failed: 0 };
+    if (record.status === "SKIPPED") row.skipped += 1;
+    if (record.status === "FAILED") row.failed += 1;
+    rows.set(record.entityType, row);
+  }
+
+  for (const mapping of migration.mappings) {
+    if (!enabled.has(mapping.entityType)) continue;
+    const row =
+      rows.get(mapping.entityType) ??
+      { entity: mapping.entityType, source: 0, migrated: 0, updated: 0, skipped: 0, failed: 0 };
+    const exists = await shopify.resourceExists(mapping.destinationGid);
+    if (!exists) {
+      row.failed += 1;
+    } else {
+      const record = migration.records.find(
+        (item) => item.entityType === mapping.entityType && item.sourceId === mapping.sourceId,
+      );
+      if (record?.status === "UPDATED") row.updated += 1;
+      else row.migrated += 1;
+    }
+    rows.set(mapping.entityType, row);
   }
 
   const reconciliation = buildReconciliation([...rows.values()]);
@@ -693,6 +796,10 @@ async function createEntityDefinitions(
               migration.sourceConnection,
               "wordpressApplicationPassword",
             ),
+            basePath: metadataString(
+              migration.sourceConnection.metadata,
+              "wordpressBaseUrl",
+            ),
             allowPrivateNetwork:
               process.env.ALLOW_PRIVATE_NETWORK_URLS === "true",
           }),
@@ -733,11 +840,19 @@ async function createShopifyAdapter(
   if (migration.targetConnection.platform !== "SHOPIFY") {
     throw new Error("Target connection must be Shopify.");
   }
-  return new ShopifyAdapter({
+  return new ShopifyAdapter(withDefined({
     shopDomain: shopDomain(migration.targetConnection.url),
-    adminAccessToken: credential(migration.targetConnection, "adminAccessToken"),
+    adminAccessToken: credentialOptional(
+      migration.targetConnection,
+      "adminAccessToken",
+    ),
+    clientId: credentialOptional(migration.targetConnection, "clientId"),
+    clientSecret: credentialOptional(
+      migration.targetConnection,
+      "clientSecret",
+    ),
     apiVersion: migration.targetConnection.apiVersion ?? "2026-01",
-  });
+  }));
 }
 
 function productDefinition(
@@ -749,8 +864,24 @@ function productDefinition(
     sourceId: (record) => record.sourceId,
     displayName: (record) => record.title,
     validate: (record) => required(record.sourceId, "sourceId", record.title, "title"),
-    migrate: (record, context) =>
-      context.shopify.upsertProduct(record, record.sourceId),
+    migrate: async (record, context, existingDestinationGid) => {
+      const result = await context.shopify.upsertProduct(
+        record,
+        record.sourceId,
+        existingDestinationGid,
+      );
+      const collectionGids = (
+        await Promise.all(
+          record.collectionSourceIds.map((sourceId) =>
+            context.findMapping("COLLECTION", sourceId),
+          ),
+        )
+      ).filter((gid): gid is string => Boolean(gid));
+      if (collectionGids.length > 0) {
+        await context.shopify.addProductToCollections(result.gid, collectionGids);
+      }
+      return result;
+    },
   };
 }
 
@@ -771,10 +902,15 @@ function variantDefinition(
         record.title,
         "title",
       ),
-    migrate: async (record, context) => {
+    migrate: async (record, context, existingDestinationGid) => {
       const productGid = await context.findMapping("PRODUCT", record.productSourceId);
       if (!productGid) throw mappingError("PRODUCT", record.productSourceId);
-      return context.shopify.upsertVariant(record, productGid, record.sourceId);
+      return context.shopify.upsertVariant(
+        record,
+        productGid,
+        record.sourceId,
+        existingDestinationGid,
+      );
     },
   };
 }
@@ -788,8 +924,12 @@ function collectionDefinition(
     sourceId: (record) => record.sourceId,
     displayName: (record) => record.title,
     validate: (record) => required(record.sourceId, "sourceId", record.title, "title"),
-    migrate: (record, context) =>
-      context.shopify.upsertCollection(record, record.sourceId),
+    migrate: (record, context, existingDestinationGid) =>
+      context.shopify.upsertCollection(
+        record,
+        record.sourceId,
+        existingDestinationGid,
+      ),
   };
 }
 
@@ -968,6 +1108,14 @@ function prismaMigrationStore(migrationId: string): MigrationStore {
         },
       });
       return mapping?.destinationGid ?? null;
+    },
+    findMappingRecord(entityType, sourceId) {
+      return prisma.entityMapping.findUnique({
+        where: {
+          migrationId_entityType_sourceId: { migrationId, entityType, sourceId },
+        },
+        select: { destinationGid: true, sourceHash: true },
+      });
     },
     async upsertRecord(input) {
       return prisma.migrationRecord.upsert({
@@ -1159,6 +1307,14 @@ function credentialOptional(
 
 function shopDomain(url: string) {
   return new URL(url).hostname;
+}
+
+function metadataString(metadata: Prisma.JsonValue, key: string) {
+  if (!metadata || Array.isArray(metadata) || typeof metadata !== "object") {
+    return undefined;
+  }
+  const value = (metadata as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function required(...pairs: Array<string | undefined>) {

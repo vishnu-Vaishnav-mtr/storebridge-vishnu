@@ -10,7 +10,7 @@ import {
 } from "@storebridge/shared";
 import { ShopifyAdapter } from "@storebridge/shopify-adapter";
 import { WooCommerceAdapter } from "@storebridge/woo-adapter";
-import { getCurrentMembership } from "@/lib/session";
+import { canManageConnections, getCurrentMembership } from "@/lib/session";
 import { rateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
@@ -19,6 +19,12 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { ok: false, error: "Authentication required." },
       { status: 401 },
+    );
+  }
+  if (!canManageConnections(membership.role)) {
+    return NextResponse.json(
+      { ok: false, error: "Insufficient permissions." },
+      { status: 403 },
     );
   }
   const limited = rateLimit({
@@ -53,11 +59,7 @@ export async function POST(request: Request) {
         wordpressBaseUrl: body.wordpressBaseUrl || undefined,
       });
 
-      const result =
-        input.storeUrl.includes("demo-woocommerce.storebridge.local") ||
-        body.demo === true
-          ? demoResult("Demo Woo Store")
-          : await new WooCommerceAdapter({
+      const result = await new WooCommerceAdapter({
               storeUrl: input.storeUrl,
               consumerKey: input.consumerKey,
               consumerSecret: input.consumerSecret,
@@ -84,7 +86,11 @@ export async function POST(request: Request) {
           secrets: {
             consumerKey: input.consumerKey,
             consumerSecret: input.consumerSecret,
+            wordpressUsername: input.wordpressUsername,
             wordpressApplicationPassword: input.wordpressApplicationPassword,
+          },
+          connectionMetadata: {
+            wordpressBaseUrl: input.wordpressBaseUrl,
           },
           encryptionKey,
         });
@@ -97,16 +103,14 @@ export async function POST(request: Request) {
       const input = shopifyTokenConnectionSchema.parse({
         name: body.name,
         shopDomain: body.shopDomain,
-        adminAccessToken: body.adminAccessToken,
+        clientId: body.clientId || undefined,
+        clientSecret: body.clientSecret || undefined,
+        adminAccessToken: body.adminAccessToken || undefined,
         apiVersion:
           body.apiVersion || process.env.SHOPIFY_API_VERSION || "2026-01",
       });
 
-      const result =
-        input.shopDomain.includes("demo-store.myshopify.com") ||
-        body.demo === true
-          ? demoResult("Demo Shopify")
-          : await new ShopifyAdapter(input).testConnection();
+      const result = await new ShopifyAdapter(input).testConnection();
 
       if (persist) {
         if (!encryptionKey)
@@ -121,7 +125,11 @@ export async function POST(request: Request) {
           apiVersion: input.apiVersion,
           status: result.status,
           metadata: result.metadata,
-          secrets: { adminAccessToken: input.adminAccessToken },
+          secrets: {
+            clientId: input.clientId,
+            clientSecret: input.clientSecret,
+            adminAccessToken: input.adminAccessToken,
+          },
           encryptionKey,
         });
       }
@@ -167,6 +175,7 @@ async function saveConnection(input: {
   apiVersion?: string;
   status: string;
   metadata: Record<string, unknown>;
+  connectionMetadata?: Record<string, unknown>;
   secrets: Record<string, string | undefined>;
   encryptionKey: string;
 }) {
@@ -178,7 +187,10 @@ async function saveConnection(input: {
       status: input.status as never,
       url: input.url,
       apiVersion: input.apiVersion ?? null,
-      metadata: input.metadata as Prisma.InputJsonObject,
+      metadata: {
+        ...input.metadata,
+        ...input.connectionMetadata,
+      } as Prisma.InputJsonObject,
       lastCheckedAt: new Date(),
     },
   });
@@ -198,28 +210,4 @@ async function saveConnection(input: {
       },
     });
   }
-}
-
-function demoResult(storeName: string) {
-  return {
-    ok: true,
-    status: "CONNECTED",
-    storeName,
-    metadata: {
-      storeName,
-      currency: "USD",
-      timezone: "America/New_York",
-      grantedScopes: [
-        "write_products",
-        "write_customers",
-        "write_orders",
-        "write_content",
-        "write_files",
-      ],
-      missingScopes: [],
-    },
-    warnings: [],
-    missingPermissions: [],
-    responseTimeMs: 24,
-  };
 }

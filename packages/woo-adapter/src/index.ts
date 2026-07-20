@@ -86,22 +86,43 @@ export class WooCommerceAdapter {
   }
 
   async audit(): Promise<AuditEntityResult[]> {
-    const [products, customers, orders, coupons] = await Promise.all([
-      this.count("products"),
-      this.count("customers"),
-      this.count("orders"),
-      this.count("coupons"),
-    ]);
-
-    return [
-      entity("PRODUCT", products),
-      entity("CUSTOMER", customers),
-      entity("ORDER", orders, Math.ceil(orders * 0.03)),
-      entity("COUPON", coupons, Math.ceil(coupons * 0.1)),
-      entity("MEDIA", products),
-      entity("COLLECTION", await this.count("products/categories")),
-      entity("REVIEW", await this.count("products/reviews")),
+    const results = [
+      await auditGenerator("COLLECTION", this.productCategories(), (record) =>
+        Boolean(record.sourceId && record.title),
+      ),
+      await auditGenerator("PRODUCT", this.products(), (record) =>
+        Boolean(record.sourceId && record.title),
+      ),
+      await auditGenerator("VARIANT", this.productVariations(), (record) =>
+        Boolean(record.sourceId && record.productSourceId && record.title),
+      ),
+      await auditGenerator("MEDIA", this.productImages(), (record) =>
+        Boolean(record.sourceId && record.productSourceId && record.url),
+      ),
+      await auditGenerator("INVENTORY", this.inventory(), (record) =>
+        Boolean(record.sourceId && Number.isFinite(record.quantity)),
+      ),
+      await auditGenerator("CUSTOMER", this.customers(), (record) =>
+        Boolean(record.sourceId && (record.email || record.phone)),
+      ),
+      await auditGenerator(
+        "CUSTOMER_ADDRESS",
+        this.customerAddresses(),
+        (record) => Boolean(record.sourceId && record.customerSourceId),
+      ),
+      await auditGenerator("ORDER", this.orders(), (record) =>
+        Boolean(record.sourceId && record.name && record.lineItems.length > 0),
+      ),
     ];
+    const [coupons, reviews] = await Promise.all([
+      this.count("coupons"),
+      this.count("products/reviews"),
+    ]);
+    results.push(
+      entity("COUPON", coupons, coupons),
+      entity("REVIEW", reviews, reviews),
+    );
+    return results;
   }
 
   async *products(pageSize = 50): AsyncGenerator<{
@@ -109,22 +130,9 @@ export class WooCommerceAdapter {
     raw: unknown;
     hash: string;
   }> {
-    let page = 1;
-    while (true) {
-      const products = await this.request<Array<Record<string, unknown>>>(
-        "products",
-        {
-          page: String(page),
-          per_page: String(pageSize),
-        },
-      );
-      if (products.length === 0) break;
-
-      for (const product of products) {
+    for await (const product of this.rawPaginated("products", pageSize)) {
         const normalized = normalizeWooProduct(product);
         yield { normalized, raw: product, hash: stableHash(product) };
-      }
-      page += 1;
     }
   }
 
@@ -263,15 +271,19 @@ export class WooCommerceAdapter {
     pageSize: number,
   ): AsyncGenerator<Record<string, unknown>> {
     let page = 1;
-    while (true) {
-      const rows = await this.request<Array<Record<string, unknown>>>(
-        endpoint,
-        {
-          page: String(page),
-          per_page: String(pageSize),
-        },
+    let totalPages = 1;
+    while (page <= totalPages) {
+      const response = await this.rawRequest(endpoint, {
+        page: String(page),
+        per_page: String(pageSize),
+      });
+      if (!response.ok)
+        throw new Error(`WooCommerce returned ${response.status}.`);
+      const rows = (await response.json()) as Array<Record<string, unknown>>;
+      totalPages = Math.max(
+        1,
+        Number(response.headers.get("x-wp-totalpages") ?? totalPages),
       );
-      if (rows.length === 0) break;
       for (const row of rows) yield row;
       page += 1;
     }
@@ -343,6 +355,9 @@ function normalizeWooProduct(
           .map((tag) => String((tag as { name?: unknown }).name ?? ""))
           .filter(Boolean)
       : [],
+    collectionSourceIds: categories
+      .map((category) => String((category as { id?: unknown }).id ?? ""))
+      .filter(Boolean),
     images: images.map((image) => ({
       sourceId: String(
         (image as { id?: unknown }).id ?? (image as { src?: unknown }).src,
@@ -468,7 +483,34 @@ function normalizeWooCustomer(customer: Record<string, unknown>): NormalizedCust
   const shipping = normalizeWooAddress(customer.shipping, `${customer.id}:shipping`);
   if (billing) normalized.addresses.push(billing);
   if (shipping) normalized.addresses.push(shipping);
+  if (billing?.phone) normalized.phone = billing.phone;
   return normalized;
+}
+
+async function auditGenerator<T>(
+  entityType: string,
+  records: AsyncIterable<{ normalized: T }>,
+  supported: (record: T) => boolean,
+): Promise<AuditEntityResult> {
+  let detectedCount = 0;
+  let supportedCount = 0;
+  for await (const record of records) {
+    detectedCount += 1;
+    if (supported(record.normalized)) supportedCount += 1;
+  }
+  const unsupportedCount = detectedCount - supportedCount;
+  return {
+    entityType,
+    detectedCount,
+    supportedCount,
+    needsMapping: 0,
+    warningCount: unsupportedCount,
+    unsupportedCount,
+    warnings:
+      unsupportedCount > 0
+        ? [`${unsupportedCount} records failed source validation.`]
+        : [],
+  };
 }
 
 function normalizeWooOrder(order: Record<string, unknown>): NormalizedOrder {

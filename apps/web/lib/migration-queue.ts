@@ -13,11 +13,11 @@ export async function enqueueMigrationJob(action: string, migrationId: string) {
       action,
       { migrationId, action },
       {
-        jobId: `${action}:${migrationId}`,
+        jobId: `${action}-${migrationId}`,
         attempts: 3,
         backoff: { type: "exponential", delay: 1000 },
         removeOnComplete: true,
-        removeOnFail: false,
+        removeOnFail: true,
       },
     );
   } finally {

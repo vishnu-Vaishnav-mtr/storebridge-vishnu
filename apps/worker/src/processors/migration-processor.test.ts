@@ -32,6 +32,7 @@ function productRecords(
         ...row,
         status: "ACTIVE" as const,
         tags: [],
+        collectionSourceIds: [],
         images: [],
         options: [],
         metafields: [],
@@ -91,6 +92,7 @@ function fakeShopify(
 
 function fakeStore() {
   const mappings = new Map<string, string>();
+  const mappingHashes = new Map<string, string>();
   const records = new Map<string, StoredRecord>();
   const checkpoints = new Map<string, { processed: number; lastSourceId: string | null }>();
   const errors: Array<{
@@ -106,11 +108,21 @@ function fakeStore() {
 
   return {
     mappings,
+    mappingHashes,
     records,
     errors,
     checkpoints,
     async findMapping(entityType: string, sourceId: string) {
       return mappings.get(key(entityType, sourceId)) ?? null;
+    },
+    async findMappingRecord(entityType: string, sourceId: string) {
+      const mappingKey = key(entityType, sourceId);
+      const destinationGid = mappings.get(mappingKey);
+      if (!destinationGid) return null;
+      return {
+        destinationGid,
+        sourceHash: mappingHashes.get(mappingKey) ?? null,
+      };
     },
     async upsertRecord(input: {
       entityType: string;
@@ -135,8 +147,11 @@ function fakeStore() {
       entityType: string;
       sourceId: string;
       destinationGid: string;
+      sourceHash: string;
     }) {
-      mappings.set(key(input.entityType, input.sourceId), input.destinationGid);
+      const mappingKey = key(input.entityType, input.sourceId);
+      mappings.set(mappingKey, input.destinationGid);
+      mappingHashes.set(mappingKey, input.sourceHash);
     },
     async checkpoint(entityType: string) {
       return checkpoints.get(entityType) ?? { processed: 0, lastSourceId: null };
@@ -218,6 +233,10 @@ describe("migration processor pipeline", () => {
   it("does not create duplicates when mappings already point to existing Shopify resources", async () => {
     const store = fakeStore();
     store.mappings.set("PRODUCT:woo-101", "gid://shopify/Product/existing");
+    store.mappingHashes.set(
+      "PRODUCT:woo-101",
+      sourceHash({ sourceId: "woo-101", title: "First product" }),
+    );
     const shopify = fakeShopify(async () => {
       throw new Error("duplicate create should not be called");
     });
@@ -236,6 +255,28 @@ describe("migration processor pipeline", () => {
     expect(store.records.get("PRODUCT:woo-101")?.status).toBe(
       "DUPLICATE_PREVENTED",
     );
+  });
+
+  it("updates Shopify when a previously mapped source record has changed", async () => {
+    const store = fakeStore();
+    store.mappings.set("PRODUCT:woo-101", "gid://shopify/Product/existing");
+    store.mappingHashes.set(
+      "PRODUCT:woo-101",
+      sourceHash({ sourceId: "woo-101", title: "Old title" }),
+    );
+    const shopify = fakeShopify(async () => ({
+      gid: "gid://shopify/Product/existing",
+    }));
+
+    await runMigrationPipeline({
+      migrationId: "migration-1",
+      definitions: [productDefinition([{ sourceId: "woo-101", title: "New title" }])],
+      shopify: shopify as never,
+      store: store as never,
+    });
+
+    expect(shopify.upsertProduct).toHaveBeenCalledTimes(1);
+    expect(store.records.get("PRODUCT:woo-101")?.status).toBe("UPDATED");
   });
 
   it("keeps failed Shopify mutations failed without creating mappings", async () => {

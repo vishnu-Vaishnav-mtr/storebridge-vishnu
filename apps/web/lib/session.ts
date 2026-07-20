@@ -42,3 +42,11 @@ export async function requireCurrentMembership() {
 export function canManageReports(role: UserRole) {
   return ["OWNER", "ADMIN", "OPERATOR", "VIEWER"].includes(role);
 }
+
+export function canManageConnections(role: UserRole) {
+  return role === "OWNER" || role === "ADMIN";
+}
+
+export function canOperateMigrations(role: UserRole) {
+  return role === "OWNER" || role === "ADMIN" || role === "OPERATOR";
+}

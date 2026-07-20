@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
-import { getCurrentMembership } from "@/lib/session";
+import { canOperateMigrations, getCurrentMembership } from "@/lib/session";
 import { createMigrationForMember } from "@/lib/migrations";
 import { rateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   const membership = await getCurrentMembership();
+  if (membership && !canOperateMigrations(membership.role)) {
+    return NextResponse.json(
+      { ok: false, message: "Insufficient permissions." },
+      { status: 403 },
+    );
+  }
   if (membership) {
     const limited = rateLimit({
       key: `migration-create:${membership.organisationId}`,

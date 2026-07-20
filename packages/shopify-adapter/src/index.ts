@@ -15,11 +15,16 @@ import type {
 
 export interface ShopifyConnectionOptions {
   shopDomain: string;
-  adminAccessToken: string;
+  adminAccessToken?: string | undefined;
+  clientId?: string | undefined;
+  clientSecret?: string | undefined;
   apiVersion?: string;
 }
 
 export class ShopifyAdapter {
+  private cachedAccessToken?: string;
+  private accessTokenExpiresAt = 0;
+
   constructor(private readonly options: ShopifyConnectionOptions) {}
 
   async testConnection(): Promise<AdapterConnectionResult> {
@@ -56,6 +61,9 @@ export class ShopifyAdapter {
         "write_orders",
         "write_content",
         "write_files",
+        "write_inventory",
+        "read_locations",
+        "write_online_store_navigation",
       ];
       const missingPermissions = requiredScopes.filter(
         (scope) => !grantedScopes.includes(scope),
@@ -96,9 +104,54 @@ export class ShopifyAdapter {
   async upsertProduct(
     product: NormalizedProduct,
     sourceId: string,
+    existingDestinationGid?: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
-    const existing = await this.findProductBySourceId(sourceId);
-    if (existing) return { gid: existing, duplicatePrevented: true };
+    const existing =
+      existingDestinationGid ?? (await this.findProductBySourceId(sourceId));
+    const productInput = {
+      title: product.title,
+      handle: product.handle,
+      descriptionHtml: product.descriptionHtml,
+      vendor: product.vendor,
+      productType: product.productType,
+      tags: product.tags,
+      status: product.status,
+      seo: seoInput(product.seo),
+      productOptions: product.options.map((option) => ({
+        name: option.name,
+        values: option.values.map((name) => ({ name })),
+      })),
+      metafields: [
+        ...product.metafields,
+        {
+          namespace: "storebridge",
+          key: "source_product_id",
+          type: "single_line_text_field",
+          value: sourceId,
+        },
+      ],
+    };
+
+    if (existing) {
+      const response = await this.graphql<{
+        productUpdate: {
+          product: { id: string } | null;
+          userErrors: Array<{ message: string }>;
+        };
+      }>(
+        `mutation StoreBridgeProductUpdate($product: ProductUpdateInput!) {
+          productUpdate(product: $product) {
+            product { id }
+            userErrors { message }
+          }
+        }`,
+        { product: { ...productInput, id: existing, productOptions: undefined } },
+      );
+      const error = response.productUpdate.userErrors[0];
+      if (error) throw new Error(error.message);
+      await this.updateDefaultVariant(existing, product);
+      return { gid: existing, duplicatePrevented: false };
+    }
 
     const response = await this.graphql<{
       productCreate: {
@@ -113,29 +166,7 @@ export class ShopifyAdapter {
         }
       }`,
       {
-        product: {
-          title: product.title,
-          handle: product.handle,
-          descriptionHtml: product.descriptionHtml,
-          vendor: product.vendor,
-          productType: product.productType,
-          tags: product.tags,
-          status: product.status,
-          seo: seoInput(product.seo),
-          productOptions: product.options.map((option) => ({
-            name: option.name,
-            values: option.values.map((name) => ({ name })),
-          })),
-          metafields: [
-            ...product.metafields,
-            {
-              namespace: "storebridge",
-              key: "source_product_id",
-              type: "single_line_text_field",
-              value: sourceId,
-            },
-          ],
-        },
+        product: productInput,
       },
     );
 
@@ -143,7 +174,27 @@ export class ShopifyAdapter {
     if (error) throw new Error(error.message);
     const gid = response.productCreate.product?.id;
     if (!gid) throw new Error("Shopify did not return a product ID.");
+    await this.updateDefaultVariant(gid, product);
     return { gid, duplicatePrevented: false };
+  }
+
+  async addProductToCollections(productGid: string, collectionGids: string[]) {
+    for (const collectionGid of collectionGids) {
+      const response = await this.graphql<{
+        collectionAddProducts: { userErrors: Array<{ message: string }> };
+      }>(
+        `mutation StoreBridgeCollectionAddProduct($id: ID!, $productIds: [ID!]!) {
+          collectionAddProducts(id: $id, productIds: $productIds) {
+            userErrors { message }
+          }
+        }`,
+        { id: collectionGid, productIds: [productGid] },
+      );
+      const error = response.collectionAddProducts.userErrors[0];
+      if (error && !/already|exists/i.test(error.message)) {
+        throw new Error(error.message);
+      }
+    }
   }
 
   async resourceExists(gid: string): Promise<boolean> {
@@ -159,13 +210,42 @@ export class ShopifyAdapter {
   async upsertCollection(
     collection: NormalizedCollection,
     sourceId: string,
+    existingDestinationGid?: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
-    const existing = await this.findBySourceMetafield(
-      "collections",
-      "source_collection_id",
-      sourceId,
-    );
-    if (existing) return { gid: existing, duplicatePrevented: true };
+    const existing =
+      existingDestinationGid ??
+      (await this.findBySourceMetafield(
+        "collections",
+        "source_collection_id",
+        sourceId,
+      ));
+    if (existing) {
+      const response = await this.graphql<{
+        collectionUpdate: {
+          collection: { id: string } | null;
+          userErrors: Array<{ message: string }>;
+        };
+      }>(
+        `mutation StoreBridgeCollectionUpdate($input: CollectionInput!) {
+          collectionUpdate(input: $input) {
+            collection { id }
+            userErrors { message }
+          }
+        }`,
+        {
+          input: withDefined({
+            id: existing,
+            title: collection.title,
+            handle: collection.handle,
+            descriptionHtml: collection.descriptionHtml,
+            seo: seoInput(collection.seo),
+          }),
+        },
+      );
+      const error = response.collectionUpdate.userErrors[0];
+      if (error) throw new Error(error.message);
+      return { gid: existing, duplicatePrevented: false };
+    }
     const response = await this.graphql<{
       collectionCreate: {
         collection: { id: string } | null;
@@ -241,13 +321,37 @@ export class ShopifyAdapter {
     variant: NormalizedVariant,
     productGid: string,
     sourceId: string,
+    existingDestinationGid?: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
-    const existing = await this.findBySourceMetafield(
-      "productVariants",
-      "source_variant_id",
-      sourceId,
-    );
-    if (existing) return { gid: existing, duplicatePrevented: true };
+    const existing =
+      existingDestinationGid ??
+      (await this.findBySourceMetafield(
+        "productVariants",
+        "source_variant_id",
+        sourceId,
+      ));
+    if (existing) {
+      const response = await this.graphql<{
+        productVariantsBulkUpdate: {
+          productVariants: Array<{ id: string }>;
+          userErrors: Array<{ message: string }>;
+        };
+      }>(
+        `mutation StoreBridgeVariantUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            productVariants { id }
+            userErrors { message }
+          }
+        }`,
+        {
+          productId: productGid,
+          variants: [variantInput(variant, existing)],
+        },
+      );
+      const error = response.productVariantsBulkUpdate.userErrors[0];
+      if (error) throw new Error(error.message);
+      return { gid: existing, duplicatePrevented: false };
+    }
     const response = await this.graphql<{
       productVariantsBulkCreate: {
         productVariants: Array<{ id: string }>;
@@ -263,16 +367,7 @@ export class ShopifyAdapter {
       {
         productId: productGid,
         variants: [
-          withDefined({
-            price: variant.price,
-            compareAtPrice: variant.compareAtPrice,
-            inventoryItem: withDefined({ sku: variant.sku, tracked: true }),
-            optionValues: variant.optionValues,
-            metafields: [
-              ...variant.metafields,
-              ...sourceMetafield("source_variant_id", sourceId),
-            ],
-          }),
+          variantInput(variant, undefined, sourceId),
         ],
       },
     );
@@ -288,6 +383,21 @@ export class ShopifyAdapter {
     inventoryItemGid: string,
     locationGid: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
+    const activation = await this.graphql<{
+      inventoryActivate: { userErrors: Array<{ message: string }> };
+    }>(
+      `mutation StoreBridgeInventoryActivate($inventoryItemId: ID!, $locationId: ID!) {
+        inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+          userErrors { message }
+        }
+      }`,
+      { inventoryItemId: inventoryItemGid, locationId: locationGid },
+    );
+    const activationError = activation.inventoryActivate.userErrors[0];
+    if (activationError && !/already|active/i.test(activationError.message)) {
+      throw new Error(activationError.message);
+    }
+
     const response = await this.graphql<{
       inventorySetQuantities: {
         inventoryAdjustmentGroup: { id: string } | null;
@@ -304,6 +414,8 @@ export class ShopifyAdapter {
         input: {
           name: "available",
           reason: "correction",
+          ignoreCompareQuantity: true,
+          referenceDocumentUri: `gid://storebridge/Inventory/${inventory.sourceId}`,
           quantities: [
             {
               inventoryItemId: inventoryItemGid,
@@ -406,7 +518,6 @@ export class ShopifyAdapter {
           lastName: customer.lastName,
           phone: customer.phone,
           acceptsMarketing: customer.acceptsMarketing,
-          addresses: customer.addresses.map(addressInput),
           metafields: [
             ...customer.metafields,
             ...sourceMetafield("source_customer_id", sourceId),
@@ -424,14 +535,8 @@ export class ShopifyAdapter {
   async upsertCustomerAddress(
     address: NormalizedAddress & { customerSourceId: string },
     customerGid: string,
-    sourceId: string,
+    _sourceId: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
-    const existing = await this.findBySourceMetafield(
-      "customerAddresses",
-      "source_customer_address_id",
-      sourceId,
-    );
-    if (existing) return { gid: existing, duplicatePrevented: true };
     const response = await this.graphql<{
       customerAddressCreate: {
         customerAddress: { id: string } | null;
@@ -450,10 +555,6 @@ export class ShopifyAdapter {
     if (error) throw new Error(error.message);
     const gid = response.customerAddressCreate.customerAddress?.id;
     if (!gid) throw new Error("Shopify did not return a customer address ID.");
-    await this.setMetafields(
-      gid,
-      sourceMetafield("source_customer_address_id", sourceId),
-    );
     return { gid, duplicatePrevented: false };
   }
 
@@ -589,7 +690,7 @@ export class ShopifyAdapter {
           title: post.title,
           handle: post.handle,
           body: post.bodyHtml,
-          author: post.author,
+          author: { name: post.author ?? "StoreBridge Import" },
           isPublished: post.status === "PUBLISHED",
           publishedAt: post.publishedAt,
           seo: seoInput(post.seo),
@@ -606,7 +707,7 @@ export class ShopifyAdapter {
 
   async createUrlRedirect(
     redirect: NormalizedRedirect,
-    sourceId: string,
+    _sourceId: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
     const existing = await this.findUrlRedirect(redirect.path);
     if (existing) return { gid: existing, duplicatePrevented: true };
@@ -633,23 +734,26 @@ export class ShopifyAdapter {
     if (error) throw new Error(error.message);
     const gid = response.urlRedirectCreate.urlRedirect?.id;
     if (!gid) throw new Error("Shopify did not return a redirect ID.");
-    await this.setMetafields(gid, sourceMetafield("source_redirect_id", sourceId));
     return { gid, duplicatePrevented: false };
   }
 
   private async findProductBySourceId(
     sourceId: string,
   ): Promise<string | null> {
-    const query = `metafield:storebridge.source_product_id:${sourceId}`;
+    const query = metafieldSearch("source_product_id", sourceId);
     const response = await this.graphql<{
-      products: { nodes: Array<{ id: string }> };
+      products: { nodes: Array<{ id: string; metafield: { value: string } | null }> };
     }>(
       `query StoreBridgeProductBySourceId($query: String!) {
-        products(first: 1, query: $query) { nodes { id } }
+        products(first: 10, query: $query) {
+          nodes { id metafield(namespace: "storebridge", key: "source_product_id") { value } }
+        }
       }`,
       { query },
     );
-    return response.products.nodes[0]?.id ?? null;
+    return response.products.nodes.find(
+      (node) => node.metafield?.value === sourceId,
+    )?.id ?? null;
   }
 
   private async findBySourceMetafield(
@@ -657,14 +761,62 @@ export class ShopifyAdapter {
     key: string,
     sourceId: string,
   ): Promise<string | null> {
-    const query = `metafield:storebridge.${key}:${sourceId}`;
-    const response = await this.graphql<Record<string, { nodes: Array<{ id: string }> }>>(
+    const query = metafieldSearch(key, sourceId);
+    const response = await this.graphql<
+      Record<
+        string,
+        { nodes: Array<{ id: string; metafield: { value: string } | null }> }
+      >
+    >(
       `query StoreBridgeResourceBySourceId($query: String!) {
-        ${resource}(first: 1, query: $query) { nodes { id } }
+        ${resource}(first: 10, query: $query) {
+          nodes { id metafield(namespace: "storebridge", key: "${key}") { value } }
+        }
       }`,
       { query },
     );
-    return response[resource]?.nodes[0]?.id ?? null;
+    return response[resource]?.nodes.find(
+      (node) => node.metafield?.value === sourceId,
+    )?.id ?? null;
+  }
+
+  private async updateDefaultVariant(
+    productGid: string,
+    product: NormalizedProduct,
+  ) {
+    if (!product.sku && !product.price && !product.compareAtPrice) return;
+    const response = await this.graphql<{
+      product: { variants: { nodes: Array<{ id: string }> } } | null;
+    }>(
+      `query StoreBridgeDefaultVariant($id: ID!) {
+        product(id: $id) { variants(first: 1) { nodes { id } } }
+      }`,
+      { id: productGid },
+    );
+    const variantGid = response.product?.variants.nodes[0]?.id;
+    if (!variantGid) throw new Error("Shopify did not return a default variant.");
+    const updated = await this.graphql<{
+      productVariantsBulkUpdate: { userErrors: Array<{ message: string }> };
+    }>(
+      `mutation StoreBridgeDefaultVariantUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+          userErrors { message }
+        }
+      }`,
+      {
+        productId: productGid,
+        variants: [
+          withDefined({
+            id: variantGid,
+            price: product.price,
+            compareAtPrice: product.compareAtPrice,
+            inventoryItem: withDefined({ sku: product.sku, tracked: true }),
+          }),
+        ],
+      },
+    );
+    const error = updated.productVariantsBulkUpdate.userErrors[0];
+    if (error) throw new Error(error.message);
   }
 
   private async findUrlRedirect(path: string): Promise<string | null> {
@@ -729,8 +881,9 @@ export class ShopifyAdapter {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-shopify-access-token": this.options.adminAccessToken,
+          "x-shopify-access-token": await this.accessToken(),
         },
+        signal: AbortSignal.timeout(30_000),
         body: JSON.stringify({ query, variables }),
       },
     );
@@ -745,6 +898,47 @@ export class ShopifyAdapter {
     if (!payload.data) throw new Error("Shopify returned no data.");
     return payload.data;
   }
+
+  private async accessToken(): Promise<string> {
+    if (this.options.adminAccessToken) return this.options.adminAccessToken;
+    if (
+      this.cachedAccessToken &&
+      Date.now() < this.accessTokenExpiresAt - 60_000
+    ) {
+      return this.cachedAccessToken;
+    }
+    if (!this.options.clientId || !this.options.clientSecret) {
+      throw new Error("Shopify Client ID and Client Secret are required.");
+    }
+
+    const response = await fetch(
+      `https://${this.options.shopDomain}/admin/oauth/access_token`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        signal: AbortSignal.timeout(30_000),
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: this.options.clientId,
+          client_secret: this.options.clientSecret,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Shopify authentication returned ${response.status}.`);
+    }
+    const payload = (await response.json()) as {
+      access_token?: string;
+      expires_in?: number;
+    };
+    if (!payload.access_token) {
+      throw new Error("Shopify authentication returned no access token.");
+    }
+    this.cachedAccessToken = payload.access_token;
+    this.accessTokenExpiresAt =
+      Date.now() + (payload.expires_in ?? 86_399) * 1000;
+    return payload.access_token;
+  }
 }
 
 function sourceMetafield(key: string, value: string) {
@@ -756,6 +950,31 @@ function sourceMetafield(key: string, value: string) {
       value,
     },
   ];
+}
+
+function metafieldSearch(key: string, value: string) {
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `metafields.storebridge.${key}:"${escaped}"`;
+}
+
+function variantInput(
+  variant: NormalizedVariant,
+  id?: string,
+  sourceId?: string,
+) {
+  return withDefined({
+    id,
+    price: variant.price,
+    compareAtPrice: variant.compareAtPrice,
+    inventoryItem: withDefined({ sku: variant.sku, tracked: true }),
+    optionValues: id ? undefined : variant.optionValues,
+    metafields: sourceId
+      ? [
+          ...variant.metafields,
+          ...sourceMetafield("source_variant_id", sourceId),
+        ]
+      : undefined,
+  });
 }
 
 function seoInput(seo: NormalizedSeoFields | undefined) {

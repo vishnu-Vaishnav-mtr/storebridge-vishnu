@@ -23,7 +23,7 @@ export default async function DashboardPage() {
   return (
     <AppShell
       title="Overview"
-      subtitle="Your migration control room. Zero-state cards stay empty until real data or demo seed data exists."
+      subtitle="Your migration control room. Zero-state cards stay empty until real store data exists."
     >
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <MetricCard
@@ -237,7 +237,7 @@ function connectionStatus(
 ) {
   const connection = connections.find(
     (item) =>
-      item.platform === platform || item.platform === `DEMO_${platform}`,
+      item.platform === platform,
   );
   if (!connection) return "Not configured";
   if (connection.status === "CONNECTED") return "Healthy";

@@ -8,7 +8,7 @@ import { recheckStoreConnection } from "@/lib/connection-checks";
 import { checkWorkerHealth } from "@/lib/health";
 import { enqueueMigrationJob } from "@/lib/migration-queue";
 import { isUsableConnection, supportedMigrationModules } from "@/lib/migrations";
-import { requireCurrentMembership } from "@/lib/session";
+import { canOperateMigrations, requireCurrentMembership } from "@/lib/session";
 
 const storeSelectionSchema = z.object({
   migrationId: z.string().min(1),
@@ -84,6 +84,7 @@ const migrationJobSchema = z.object({
 
 export async function updateMigrationStoresAction(formData: FormData) {
   const membership = await requireCurrentMembership();
+  requireMigrationOperator(membership.role);
   const input = storeSelectionSchema.parse({
     migrationId: formData.get("migrationId"),
     sourceConnectionId: formData.get("sourceConnectionId"),
@@ -156,6 +157,7 @@ export async function updateMigrationStoresAction(formData: FormData) {
 
 export async function startAuditAction(formData: FormData) {
   const membership = await requireCurrentMembership();
+  requireMigrationOperator(membership.role);
   const input = startAuditSchema.parse({
     migrationId: formData.get("migrationId"),
   });
@@ -227,6 +229,7 @@ export async function startAuditAction(formData: FormData) {
 
 export async function updateMigrationModulesAction(formData: FormData) {
   const membership = await requireCurrentMembership();
+  requireMigrationOperator(membership.role);
   const input = moduleSelectionSchema.parse({
     migrationId: formData.get("migrationId"),
     modules: formData.getAll("modules"),
@@ -262,7 +265,7 @@ export async function updateMigrationModulesAction(formData: FormData) {
     prisma.migration.update({
       where: { id: migration.id },
       data: {
-        currentStep: Math.max(migration.currentStep, 4),
+        currentStep: Math.max(migration.currentStep, 5),
         configuration: {
           update: {
             modules: Object.fromEntries(
@@ -282,6 +285,7 @@ export async function updateMigrationModulesAction(formData: FormData) {
 
 export async function saveMappingRulesAction(formData: FormData) {
   const membership = await requireCurrentMembership();
+  requireMigrationOperator(membership.role);
   const migrationId = String(formData.get("migrationId") ?? "");
   const ruleCount = Number(formData.get("ruleCount") ?? 0);
   const rules = Array.from({ length: ruleCount }, (_, index) => ({
@@ -341,6 +345,7 @@ export async function saveMappingRulesAction(formData: FormData) {
 
 export async function resetMappingRulesAction(formData: FormData) {
   const membership = await requireCurrentMembership();
+  requireMigrationOperator(membership.role);
   const migrationId = String(formData.get("migrationId") ?? "");
   const migration = await prisma.migration.findFirst({
     where: { id: migrationId, organisationId: membership.organisationId },
@@ -369,6 +374,7 @@ export async function resetMappingRulesAction(formData: FormData) {
 
 export async function warningDecisionAction(formData: FormData) {
   const membership = await requireCurrentMembership();
+  requireMigrationOperator(membership.role);
   const input = warningDecisionSchema.parse({
     migrationId: formData.get("migrationId"),
     sourceKey: formData.get("sourceKey"),
@@ -379,12 +385,30 @@ export async function warningDecisionAction(formData: FormData) {
     select: { id: true, currentStep: true },
   });
   if (!migration) redirect("/migrations");
+  if (input.action === "RESOLVE" || input.action === "INCLUDE_RECORD") {
+    await prisma.migrationError.updateMany({
+      where: {
+        migrationId: input.migrationId,
+        OR: [{ id: input.sourceKey }, { sourceId: input.sourceKey }],
+      },
+      data: { resolvedAt: new Date() },
+    });
+  }
+  if (input.action === "INCLUDE_RECORD") {
+    await prisma.mappingRule.deleteMany({
+      where: {
+        migrationId: input.migrationId,
+        sourceKey: input.sourceKey,
+        action: "SKIP",
+      },
+    });
+  }
   await prisma.mappingRule.create({
     data: {
       migrationId: input.migrationId,
       ruleType: "WARNING_RESOLUTION",
       sourceKey: input.sourceKey,
-      action: input.action,
+      action: input.action === "SKIP_RECORD" ? "SKIP" : input.action,
       options: { decidedAt: new Date().toISOString() },
     },
   });
@@ -397,6 +421,7 @@ export async function warningDecisionAction(formData: FormData) {
 
 export async function runMigrationJobAction(formData: FormData) {
   const membership = await requireCurrentMembership();
+  requireMigrationOperator(membership.role);
   const input = migrationJobSchema.parse({
     migrationId: formData.get("migrationId"),
     action: formData.get("action"),
@@ -440,10 +465,21 @@ export async function runMigrationJobAction(formData: FormData) {
     redirect(wizardUrl(input.migrationId, null, "Migration cancelled."));
   }
 
-  try {
-    await enqueueMigrationJob(input.action, input.migrationId);
-  } catch {
-    redirect(wizardUrl(input.migrationId, "Redis queue failure. Job was not queued."));
+  if (input.action === "pause") {
+    if (migration.status !== "RUNNING") {
+      redirect(wizardUrl(input.migrationId, "Only a running migration can be paused."));
+    }
+    await prisma.migration.update({
+      where: { id: input.migrationId },
+      data: { status: "PAUSING" },
+    });
+    redirect(
+      wizardUrl(
+        input.migrationId,
+        null,
+        "Migration will pause after the current record.",
+      ),
+    );
   }
 
   const statusByAction = {
@@ -470,6 +506,18 @@ export async function runMigrationJobAction(formData: FormData) {
                 : migration.currentStep,
       },
     });
+  }
+
+  try {
+    await enqueueMigrationJob(input.action, input.migrationId);
+  } catch {
+    if (nextStatus) {
+      await prisma.migration.update({
+        where: { id: input.migrationId },
+        data: { status: migration.status, currentStep: migration.currentStep },
+      });
+    }
+    redirect(wizardUrl(input.migrationId, "Redis queue failure. Job was not queued."));
   }
 
   redirect(wizardUrl(input.migrationId, null, `${input.action} queued.`));
@@ -506,4 +554,10 @@ function suggestedOptions(rule: {
     targetKey: rule.targetKey ?? null,
     action: rule.action,
   };
+}
+
+function requireMigrationOperator(role: Parameters<typeof canOperateMigrations>[0]) {
+  if (!canOperateMigrations(role)) {
+    redirect("/dashboard?error=Insufficient%20permissions");
+  }
 }

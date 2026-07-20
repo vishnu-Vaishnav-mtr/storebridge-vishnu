@@ -14,6 +14,7 @@ export interface NormalizedProduct {
   productType?: string;
   status: "ACTIVE" | "DRAFT" | "ARCHIVED";
   tags: string[];
+  collectionSourceIds: string[];
   sku?: string;
   price?: string;
   compareAtPrice?: string;
