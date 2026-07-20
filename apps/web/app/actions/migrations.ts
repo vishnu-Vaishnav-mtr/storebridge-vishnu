@@ -95,7 +95,10 @@ export async function updateMigrationStoresAction(formData: FormData) {
     where: { id: input.migrationId, organisationId: membership.organisationId },
   });
   if (!migration) redirect("/migrations");
-  if (migration.status !== "DRAFT") {
+  const canStartAudit =
+    migration.status === "DRAFT" ||
+    (migration.status === "FAILED" && migration.currentStep === 2);
+  if (!canStartAudit) {
     redirect(wizardUrl(input.migrationId, "Invalid migration state."));
   }
 

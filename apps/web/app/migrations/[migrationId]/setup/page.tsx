@@ -87,6 +87,9 @@ export default async function MigrationSetupPage({
   );
   const canEditStores = migration.status === "DRAFT";
   const workerOffline = health.worker.status === "Offline";
+  const canStartAudit =
+    migration.status === "DRAFT" ||
+    (migration.status === "FAILED" && migration.currentStep === 2);
 
   return (
     <AppShell
@@ -129,7 +132,9 @@ export default async function MigrationSetupPage({
       </Card>
 
       {query.error ? <Notice tone="danger" message={query.error} /> : null}
-      {query.success ? <Notice tone="success" message={query.success} /> : null}
+      {query.success && migration.status !== "FAILED" ? (
+        <Notice tone="success" message={query.success} />
+      ) : null}
 
       <div className="mt-6 grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
         <Card>
@@ -203,7 +208,7 @@ export default async function MigrationSetupPage({
             <Button
               type="submit"
               disabled={
-                migration.status !== "DRAFT" ||
+                !canStartAudit ||
                 workerOffline ||
                 sources.length === 0 ||
                 destinations.length === 0
