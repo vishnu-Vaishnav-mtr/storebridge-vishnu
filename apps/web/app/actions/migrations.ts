@@ -7,7 +7,11 @@ import { z } from "zod";
 import { recheckStoreConnection } from "@/lib/connection-checks";
 import { checkWorkerHealth } from "@/lib/health";
 import { enqueueMigrationJob } from "@/lib/migration-queue";
-import { isUsableConnection, supportedMigrationModules } from "@/lib/migrations";
+import {
+  canStartSourceAudit,
+  isUsableConnection,
+  supportedMigrationModules,
+} from "@/lib/migrations";
 import { canOperateMigrations, requireCurrentMembership } from "@/lib/session";
 
 const storeSelectionSchema = z.object({
@@ -95,10 +99,7 @@ export async function updateMigrationStoresAction(formData: FormData) {
     where: { id: input.migrationId, organisationId: membership.organisationId },
   });
   if (!migration) redirect("/migrations");
-  const canStartAudit =
-    migration.status === "DRAFT" ||
-    (migration.status === "FAILED" && migration.currentStep === 2);
-  if (!canStartAudit) {
+  if (migration.status !== "DRAFT") {
     redirect(wizardUrl(input.migrationId, "Invalid migration state."));
   }
 
@@ -169,7 +170,7 @@ export async function startAuditAction(formData: FormData) {
     include: { sourceConnection: true, targetConnection: true },
   });
   if (!migration) redirect("/migrations");
-  if (migration.status !== "DRAFT") {
+  if (!canStartSourceAudit(migration.status, migration.currentStep)) {
     redirect(wizardUrl(input.migrationId, "Invalid migration state."));
   }
 

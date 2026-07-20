@@ -65,6 +65,10 @@ export function isUsableConnection(connection: {
   );
 }
 
+export function canStartSourceAudit(status: string, currentStep: number) {
+  return status === "DRAFT" || (status === "FAILED" && currentStep === 2);
+}
+
 export function migrationCreateAvailability(
   connections: Array<{
     platform: string;

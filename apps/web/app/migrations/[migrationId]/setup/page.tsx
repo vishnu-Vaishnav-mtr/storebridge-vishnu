@@ -12,7 +12,7 @@ import {
 } from "@/app/actions/migrations";
 import { prisma } from "@storebridge/database";
 import { getInfrastructureHealth } from "@/lib/health";
-import { isUsableConnection } from "@/lib/migrations";
+import { canStartSourceAudit, isUsableConnection } from "@/lib/migrations";
 import { requireCurrentMembership } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -87,9 +87,10 @@ export default async function MigrationSetupPage({
   );
   const canEditStores = migration.status === "DRAFT";
   const workerOffline = health.worker.status === "Offline";
-  const canStartAudit =
-    migration.status === "DRAFT" ||
-    (migration.status === "FAILED" && migration.currentStep === 2);
+  const canStartAudit = canStartSourceAudit(
+    migration.status,
+    migration.currentStep,
+  );
 
   return (
     <AppShell

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import {
+  canStartSourceAudit,
   createMigrationForMember,
   migrationCreateAvailability,
   supportedMigrationModules,
@@ -62,6 +63,13 @@ function dbWithConnections(connections: unknown[], existingId?: string) {
 }
 
 describe("create migration workflow", () => {
+  it("allows only draft audits or retries of failed Step 2 audits", () => {
+    expect(canStartSourceAudit("DRAFT", 1)).toBe(true);
+    expect(canStartSourceAudit("FAILED", 2)).toBe(true);
+    expect(canStartSourceAudit("FAILED", 6)).toBe(false);
+    expect(canStartSourceAudit("READY", 3)).toBe(false);
+  });
+
   it("rejects unauthenticated users", async () => {
     const result = await createMigrationForMember({
       membership: null,
