@@ -674,6 +674,29 @@ async function retryFailed(migration: MigrationWithConnections) {
     if (mapping) await store.resolveError(error.id);
     else await store.touchError(error.id, "Retry attempted but the record is still failed.");
   }
+
+  const recordCounts = await prisma.migrationRecord.groupBy({
+    by: ["status"],
+    where: { migrationId: migration.id },
+    _count: { _all: true },
+  });
+  const count = (status: string) =>
+    recordCounts.find((entry) => entry.status === status)?._count._all ?? 0;
+  const failed = count("FAILED");
+  await prisma.migration.update({
+    where: { id: migration.id },
+    data: {
+      status: failed > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
+      processedRecords:
+        count("CREATED") +
+        count("UPDATED") +
+        count("DUPLICATE_PREVENTED") +
+        count("SKIPPED"),
+      failedRecords: failed,
+      duplicatesPrevented: count("DUPLICATE_PREVENTED"),
+      completedAt: new Date(),
+    },
+  });
 }
 
 async function verifyMigration(
