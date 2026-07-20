@@ -108,7 +108,11 @@ export class ShopifyAdapter {
     existingDestinationGid?: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
     const existing =
-      existingDestinationGid ?? (await this.findProductBySourceId(sourceId));
+      existingDestinationGid ??
+      (await this.findProductBySourceId(sourceId)) ??
+      (product.handle
+        ? await this.findProductByHandleAndSourceId(product.handle, sourceId)
+        : null);
     const productInput = {
       title: product.title,
       handle: product.handle,
@@ -428,13 +432,13 @@ export class ShopifyAdapter {
         input: {
           name: "available",
           reason: "correction",
-          ignoreCompareQuantity: true,
           referenceDocumentUri: `gid://storebridge/Inventory/${inventory.sourceId}`,
           quantities: [
             {
               inventoryItemId: inventoryItemGid,
               locationId: locationGid,
               quantity: inventory.quantity,
+              changeFromQuantity: null,
             },
           ],
         },
@@ -792,6 +796,26 @@ export class ShopifyAdapter {
     return response[resource]?.nodes.find(
       (node) => node.metafield?.value === sourceId,
     )?.id ?? null;
+  }
+
+  private async findProductByHandleAndSourceId(
+    handle: string,
+    sourceId: string,
+  ): Promise<string | null> {
+    const response = await this.graphql<{
+      product: { id: string; metafield: { value: string } | null } | null;
+    }>(
+      `query StoreBridgeProductByHandle($identifier: ProductIdentifierInput!) {
+        product: productByIdentifier(identifier: $identifier) {
+          id
+          metafield(namespace: "storebridge", key: "source_product_id") { value }
+        }
+      }`,
+      { identifier: { handle } },
+    );
+    return response.product?.metafield?.value === sourceId
+      ? response.product.id
+      : null;
   }
 
   private async updateDefaultVariant(

@@ -57,6 +57,50 @@ describe("Shopify 2026-07 compatibility", () => {
     expect(body.variables.variants[0]).not.toHaveProperty("compareAtPrice");
   });
 
+  it("recovers a partially created product only when its source metafield matches", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(graphqlResponse({ products: { nodes: [] } }))
+      .mockResolvedValueOnce(
+        graphqlResponse({
+          product: {
+            id: "gid://shopify/Product/1",
+            metafield: { value: "source-1" },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        graphqlResponse({
+          productUpdate: { product: { id: "gid://shopify/Product/1" }, userErrors: [] },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await adapter().upsertProduct(
+      {
+        sourceId: "source-1",
+        title: "Recovered product",
+        handle: "recovered-product",
+        status: "ACTIVE",
+        tags: [],
+        collectionSourceIds: [],
+        images: [],
+        options: [],
+        metafields: [],
+      },
+      "source-1",
+    );
+
+    expect(result.gid).toBe("gid://shopify/Product/1");
+    const recoveryQuery = JSON.parse(
+      String(fetchMock.mock.calls[1]?.[1]?.body),
+    );
+    expect(recoveryQuery.query).toContain("productByIdentifier");
+    expect(recoveryQuery.variables.identifier).toEqual({
+      handle: "recovered-product",
+    });
+  });
+
   it("uses the persisted media mapping instead of querying File.metafield", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -108,5 +152,12 @@ describe("Shopify 2026-07 compatibility", () => {
     expect(requests[1].query).toContain("@idempotent(key: $idempotencyKey)");
     expect(requests[0].variables.idempotencyKey).toHaveLength(64);
     expect(requests[1].variables.idempotencyKey).toHaveLength(64);
+    expect(requests[1].variables.input).not.toHaveProperty(
+      "ignoreCompareQuantity",
+    );
+    expect(requests[1].variables.input.quantities[0]).toHaveProperty(
+      "changeFromQuantity",
+      null,
+    );
   });
 });
