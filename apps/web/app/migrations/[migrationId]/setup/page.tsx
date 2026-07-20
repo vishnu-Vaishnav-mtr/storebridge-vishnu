@@ -12,7 +12,11 @@ import {
 } from "@/app/actions/migrations";
 import { prisma } from "@storebridge/database";
 import { getInfrastructureHealth } from "@/lib/health";
-import { canStartSourceAudit, isUsableConnection } from "@/lib/migrations";
+import {
+  canStartRealMigration,
+  canStartSourceAudit,
+  isUsableConnection,
+} from "@/lib/migrations";
 import { requireCurrentMembership } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -343,7 +347,7 @@ export default async function MigrationSetupPage({
             migrationId={migration.id}
             action="start"
             label="Start Migration"
-            disabled={!["DRY_RUN_COMPLETE", "READY", "COMPLETED_WITH_ERRORS"].includes(migration.status)}
+            disabled={!canStartRealMigration(migration.status)}
           />
           <div className="mt-3 flex flex-wrap gap-2">
             <JobActionForm migrationId={migration.id} action="pause" label="Pause" variant="secondary" disabled={migration.status !== "RUNNING"} />
@@ -467,7 +471,7 @@ function IssueList({
   validations: Array<{ id: string; stage: string; status: string; issues: unknown }>;
 }) {
   const issueRows = [
-    ...errors.map((error) => ({
+    ...errors.filter((error) => !error.resolvedAt).map((error) => ({
       key: error.id,
       group: ["VALIDATION", "AUTHENTICATION", "PERMISSION", "MAPPING"].includes(
         error.category,

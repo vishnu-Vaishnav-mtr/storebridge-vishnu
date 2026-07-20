@@ -69,6 +69,10 @@ export function canStartSourceAudit(status: string, currentStep: number) {
   return status === "DRAFT" || (status === "FAILED" && currentStep === 2);
 }
 
+export function canStartRealMigration(status: string) {
+  return status === "DRY_RUN_COMPLETE";
+}
+
 export function migrationCreateAvailability(
   connections: Array<{
     platform: string;

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import {
+  canStartRealMigration,
   canStartSourceAudit,
   createMigrationForMember,
   migrationCreateAvailability,
@@ -68,6 +69,12 @@ describe("create migration workflow", () => {
     expect(canStartSourceAudit("FAILED", 2)).toBe(true);
     expect(canStartSourceAudit("FAILED", 6)).toBe(false);
     expect(canStartSourceAudit("READY", 3)).toBe(false);
+  });
+
+  it("allows real Shopify writes only after a completed dry run", () => {
+    expect(canStartRealMigration("READY")).toBe(false);
+    expect(canStartRealMigration("DRY_RUNNING")).toBe(false);
+    expect(canStartRealMigration("DRY_RUN_COMPLETE")).toBe(true);
   });
 
   it("rejects unauthenticated users", async () => {

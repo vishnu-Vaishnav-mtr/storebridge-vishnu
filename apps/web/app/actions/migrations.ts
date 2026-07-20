@@ -8,6 +8,7 @@ import { recheckStoreConnection } from "@/lib/connection-checks";
 import { checkWorkerHealth } from "@/lib/health";
 import { enqueueMigrationJob } from "@/lib/migration-queue";
 import {
+  canStartRealMigration,
   canStartSourceAudit,
   isUsableConnection,
   supportedMigrationModules,
@@ -435,6 +436,15 @@ export async function runMigrationJobAction(formData: FormData) {
     include: { sourceConnection: true, targetConnection: true },
   });
   if (!migration) redirect("/migrations");
+
+  if (input.action === "start" && !canStartRealMigration(migration.status)) {
+    redirect(
+      wizardUrl(
+        input.migrationId,
+        "Complete a successful dry run before starting the migration.",
+      ),
+    );
+  }
 
   if (input.action === "dry-run") {
     const blocking = await hasBlockingIssues(input.migrationId);
