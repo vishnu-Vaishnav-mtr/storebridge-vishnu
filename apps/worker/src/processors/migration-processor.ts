@@ -1253,7 +1253,12 @@ function prismaMigrationStore(migrationId: string): MigrationStore {
     },
     unresolvedRetryableErrors() {
       return prisma.migrationError.findMany({
-        where: { migrationId, retryable: true, resolvedAt: null },
+        // A user can fix a previously non-retryable external blocker (for
+        // example Shopify protected-customer access or store currency). The
+        // explicit "Retry Failed Records" action must therefore retry every
+        // unresolved record, not only errors classified as transient when
+        // they were first recorded.
+        where: { migrationId, resolvedAt: null },
         select: { id: true, entityType: true, sourceId: true },
       });
     },
