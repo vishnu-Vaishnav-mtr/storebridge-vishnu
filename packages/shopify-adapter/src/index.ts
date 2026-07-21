@@ -591,13 +591,13 @@ export class ShopifyAdapter {
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
     const response = await this.graphql<{
       customerAddressCreate: {
-        customerAddress: { id: string } | null;
+        address: { id: string } | null;
         userErrors: Array<{ message: string }>;
       };
     }>(
       `mutation StoreBridgeCustomerAddressCreate($customerId: ID!, $address: MailingAddressInput!) {
         customerAddressCreate(customerId: $customerId, address: $address) {
-          customerAddress { id }
+          address { id }
           userErrors { message }
         }
       }`,
@@ -605,7 +605,7 @@ export class ShopifyAdapter {
     );
     const error = response.customerAddressCreate.userErrors[0];
     if (error) throw new Error(error.message);
-    const gid = response.customerAddressCreate.customerAddress?.id;
+    const gid = response.customerAddressCreate.address?.id;
     if (!gid) throw new Error("Shopify did not return a customer address ID.");
     return { gid, duplicatePrevented: false };
   }
@@ -1120,8 +1120,8 @@ function addressInput(address: NormalizedAddress) {
     address1: address.address1,
     address2: address.address2,
     city: address.city,
-    province: address.province,
-    country: address.country,
+    provinceCode: address.province,
+    countryCode: address.country,
     zip: address.zip,
     phone: address.phone,
   });

@@ -273,4 +273,42 @@ describe("Shopify 2026-07 compatibility", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("uses the 2026-07 Admin API customer address payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      graphqlResponse({
+        customerAddressCreate: {
+          address: { id: "gid://shopify/MailingAddress/1" },
+          userErrors: [],
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await adapter().upsertCustomerAddress(
+      {
+        sourceId: "1:billing",
+        customerSourceId: "1",
+        firstName: "Ilaria",
+        lastName: "Grieco",
+        address1: "Viale Gramsci",
+        city: "Bresso",
+        province: "MI",
+        country: "IT",
+        zip: "20991",
+      },
+      "gid://shopify/Customer/1",
+      "1:billing",
+    );
+
+    expect(result.gid).toBe("gid://shopify/MailingAddress/1");
+    const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(request.query).toContain("address { id }");
+    expect(request.variables.address).toMatchObject({
+      countryCode: "IT",
+      provinceCode: "MI",
+    });
+    expect(request.variables.address).not.toHaveProperty("country");
+    expect(request.variables.address).not.toHaveProperty("province");
+  });
 });
