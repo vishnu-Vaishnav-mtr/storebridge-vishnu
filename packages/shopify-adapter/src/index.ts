@@ -696,9 +696,41 @@ export class ShopifyAdapter {
         sourceId,
       )) ??
       (page.handle
-        ? await this.findPageByHandleAndSourceId(page.handle, sourceId)
+        ? await this.findPageByHandleAndSourceId(
+            page.handle,
+            page.title,
+            sourceId,
+          )
         : null);
-    if (existing) return { gid: existing, duplicatePrevented: true };
+    const pageInput = withDefined({
+      title: page.title,
+      handle: page.handle,
+      body: page.bodyHtml,
+      isPublished: page.status === "PUBLISHED",
+      seo: seoInput(page.seo),
+      metafields: sourceMetafield("source_page_id", sourceId),
+    });
+    if (existing) {
+      const response = await this.graphql<{
+        pageUpdate: {
+          page: { id: string } | null;
+          userErrors: Array<{ message: string }>;
+        };
+      }>(
+        `mutation StoreBridgePageUpdate($id: ID!, $page: PageUpdateInput!) {
+          pageUpdate(id: $id, page: $page) {
+            page { id }
+            userErrors { message }
+          }
+        }`,
+        { id: existing, page: pageInput },
+      );
+      const error = response.pageUpdate.userErrors[0];
+      if (error) throw new Error(error.message);
+      const gid = response.pageUpdate.page?.id;
+      if (!gid) throw new Error("Shopify did not return an updated page ID.");
+      return { gid, duplicatePrevented: false };
+    }
     const response = await this.graphql<{
       pageCreate: {
         page: { id: string } | null;
@@ -711,16 +743,7 @@ export class ShopifyAdapter {
           userErrors { message }
         }
       }`,
-      {
-        page: withDefined({
-          title: page.title,
-          handle: page.handle,
-          body: page.bodyHtml,
-          isPublished: page.status === "PUBLISHED",
-          seo: seoInput(page.seo),
-          metafields: sourceMetafield("source_page_id", sourceId),
-        }),
-      },
+      { page: pageInput },
     );
     const error = response.pageCreate.userErrors[0];
     if (error) throw new Error(error.message);
@@ -870,6 +893,7 @@ export class ShopifyAdapter {
 
   private async findPageByHandleAndSourceId(
     handle: string,
+    title: string,
     sourceId: string,
   ): Promise<string | null> {
     const response = await this.graphql<{
@@ -877,6 +901,7 @@ export class ShopifyAdapter {
         nodes: Array<{
           id: string;
           handle: string;
+          title: string;
           metafield: { value: string } | null;
         }>;
       };
@@ -886,6 +911,7 @@ export class ShopifyAdapter {
           nodes {
             id
             handle
+            title
             metafield(namespace: "storebridge", key: "source_page_id") { value }
           }
         }
@@ -893,7 +919,11 @@ export class ShopifyAdapter {
       { query: handle },
     );
     return response.pages.nodes.find(
-      (node) => node.handle === handle && node.metafield?.value === sourceId,
+      (node) =>
+        node.handle === handle &&
+        (node.metafield?.value === sourceId ||
+          (!node.metafield &&
+            node.title.trim().toLowerCase() === title.trim().toLowerCase())),
     )?.id ?? null;
   }
 

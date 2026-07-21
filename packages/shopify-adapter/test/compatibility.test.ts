@@ -247,9 +247,18 @@ describe("Shopify 2026-07 compatibility", () => {
               {
                 id: "gid://shopify/Page/1",
                 handle: "about-us",
+                title: "About us",
                 metafield: { value: "page-1" },
               },
             ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        graphqlResponse({
+          pageUpdate: {
+            page: { id: "gid://shopify/Page/1" },
+            userErrors: [],
           },
         }),
       );
@@ -269,9 +278,12 @@ describe("Shopify 2026-07 compatibility", () => {
 
     expect(result).toEqual({
       gid: "gid://shopify/Page/1",
-      duplicatePrevented: true,
+      duplicatePrevented: false,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const update = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body));
+    expect(update.query).toContain("pageUpdate");
+    expect(update.variables.id).toBe("gid://shopify/Page/1");
   });
 
   it("uses the 2026-07 Admin API customer address payload", async () => {
