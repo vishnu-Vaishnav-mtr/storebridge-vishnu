@@ -447,8 +447,12 @@ export class ShopifyAdapter {
     const error = response.inventorySetQuantities.userErrors[0];
     if (error) throw new Error(error.message);
     const gid = response.inventorySetQuantities.inventoryAdjustmentGroup?.id;
-    if (!gid) throw new Error("Shopify did not return an inventory adjustment ID.");
-    return { gid, duplicatePrevented: false };
+    // Shopify returns no adjustment group when the requested quantity already
+    // matches the current quantity. That is a successful idempotent no-op.
+    return {
+      gid: gid ?? inventoryItemGid,
+      duplicatePrevented: gid === undefined,
+    };
   }
 
   async inventoryItemGidForVariant(variantGid: string): Promise<string> {
@@ -586,20 +590,8 @@ export class ShopifyAdapter {
       sourceId,
     );
     if (existing) return { gid: existing, duplicatePrevented: true };
-    const response = await this.graphql<{
-      orderCreate: {
-        order: { id: string } | null;
-        userErrors: Array<{ message: string }>;
-      };
-    }>(
-      `mutation StoreBridgeOrderCreate($order: OrderCreateOrderInput!) {
-        orderCreate(order: $order) {
-          order { id }
-          userErrors { message }
-        }
-      }`,
-      {
-        order: withDefined({
+    const variables = {
+      order: withDefined({
           name: order.name,
           email: order.email,
           processedAt: order.processedAt,
@@ -629,25 +621,53 @@ export class ShopifyAdapter {
             ...order.metafields,
             ...sourceMetafield("source_order_id", sourceId),
           ],
-        }),
-      },
-    );
-    const error = response.orderCreate.userErrors[0];
-    if (error) throw new Error(error.message);
-    const gid = response.orderCreate.order?.id;
-    if (!gid) throw new Error("Shopify did not return an order ID.");
-    return { gid, duplicatePrevented: false };
+      }),
+    };
+
+    // Development stores allow only five orderCreate calls per minute. Retry
+    // the explicit throttle response without retrying validation failures.
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const response = await this.graphql<{
+        orderCreate: {
+          order: { id: string } | null;
+          userErrors: Array<{ message: string }>;
+        };
+      }>(
+        `mutation StoreBridgeOrderCreate($order: OrderCreateOrderInput!) {
+          orderCreate(order: $order) {
+            order { id }
+            userErrors { message }
+          }
+        }`,
+        variables,
+      );
+      const error = response.orderCreate.userErrors[0];
+      if (error && /too many attempts/i.test(error.message) && attempt < 5) {
+        await delay(13_000);
+        continue;
+      }
+      if (error) throw new Error(error.message);
+      const gid = response.orderCreate.order?.id;
+      if (!gid) throw new Error("Shopify did not return an order ID.");
+      return { gid, duplicatePrevented: false };
+    }
+
+    throw new Error("Shopify order creation remained rate limited.");
   }
 
   async upsertPage(
     page: NormalizedContent,
     sourceId: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
-    const existing = await this.findBySourceMetafield(
-      "pages",
-      "source_page_id",
-      sourceId,
-    );
+    const existing =
+      (await this.findBySourceMetafield(
+        "pages",
+        "source_page_id",
+        sourceId,
+      )) ??
+      (page.handle
+        ? await this.findPageByHandleAndSourceId(page.handle, sourceId)
+        : null);
     if (existing) return { gid: existing, duplicatePrevented: true };
     const response = await this.graphql<{
       pageCreate: {
@@ -816,6 +836,35 @@ export class ShopifyAdapter {
     return response.product?.metafield?.value === sourceId
       ? response.product.id
       : null;
+  }
+
+  private async findPageByHandleAndSourceId(
+    handle: string,
+    sourceId: string,
+  ): Promise<string | null> {
+    const response = await this.graphql<{
+      pages: {
+        nodes: Array<{
+          id: string;
+          handle: string;
+          metafield: { value: string } | null;
+        }>;
+      };
+    }>(
+      `query StoreBridgePageByHandle($query: String!) {
+        pages(first: 10, query: $query) {
+          nodes {
+            id
+            handle
+            metafield(namespace: "storebridge", key: "source_page_id") { value }
+          }
+        }
+      }`,
+      { query: handle },
+    );
+    return response.pages.nodes.find(
+      (node) => node.handle === handle && node.metafield?.value === sourceId,
+    )?.id ?? null;
   }
 
   private async updateDefaultVariant(
@@ -1052,4 +1101,8 @@ function withDefined<T extends Record<string, unknown>>(input: T) {
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined),
   );
+}
+
+function delay(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }

@@ -160,4 +160,70 @@ describe("Shopify 2026-07 compatibility", () => {
       null,
     );
   });
+
+  it("treats an inventory quantity no-op as a successful duplicate", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        graphqlResponse({ inventoryActivate: { userErrors: [] } }),
+      )
+      .mockResolvedValueOnce(
+        graphqlResponse({
+          inventorySetQuantities: {
+            inventoryAdjustmentGroup: null,
+            userErrors: [],
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await adapter().updateInventory(
+      { sourceId: "inventory-1", quantity: 4 },
+      "gid://shopify/InventoryItem/1",
+      "gid://shopify/Location/1",
+    );
+
+    expect(result).toEqual({
+      gid: "gid://shopify/InventoryItem/1",
+      duplicatePrevented: true,
+    });
+  });
+
+  it("recovers a partially created page by handle and source metafield", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(graphqlResponse({ pages: { nodes: [] } }))
+      .mockResolvedValueOnce(
+        graphqlResponse({
+          pages: {
+            nodes: [
+              {
+                id: "gid://shopify/Page/1",
+                handle: "about-us",
+                metafield: { value: "page-1" },
+              },
+            ],
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await adapter().upsertPage(
+      {
+        sourceId: "page-1",
+        title: "About us",
+        handle: "about-us",
+        bodyHtml: "<p>About us</p>",
+        status: "PUBLISHED",
+        metafields: [],
+      },
+      "page-1",
+    );
+
+    expect(result).toEqual({
+      gid: "gid://shopify/Page/1",
+      duplicatePrevented: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
