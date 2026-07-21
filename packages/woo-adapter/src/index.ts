@@ -172,11 +172,20 @@ export class WooCommerceAdapter {
     raw: unknown;
     hash: string;
   }> {
+    const seenSourceIds = new Set<string>();
     for await (const product of this.rawPaginated("products", pageSize)) {
       const productSourceId = String(product.id);
       const images = Array.isArray(product.images) ? product.images : [];
       for (const image of images) {
         const normalized = normalizeWooImage(image, productSourceId);
+        const originalSourceId = normalized.sourceId;
+        if (seenSourceIds.has(originalSourceId)) {
+          // A WordPress media item can be attached to multiple Woo products.
+          // Shopify product media is product-scoped, so repeated references
+          // need their own stable association ID instead of being discarded.
+          normalized.sourceId = `${originalSourceId}:${productSourceId}`;
+        }
+        seenSourceIds.add(originalSourceId);
         yield { normalized, raw: image, hash: stableHash(image) };
       }
     }

@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { normalizeWooOrder } from "../src/index";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { normalizeWooOrder, WooCommerceAdapter } from "../src/index";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("WooCommerce order normalization", () => {
   it("preserves numeric line-item prices", () => {
@@ -35,5 +39,34 @@ describe("WooCommerce order normalization", () => {
     });
 
     expect(order.lineItems[0]?.price).toBe("18.5");
+  });
+});
+
+describe("WooCommerce media normalization", () => {
+  it("keeps repeated WordPress media as separate product associations", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify([
+            { id: 101, images: [{ id: 900, src: "https://store.test/shared.jpg" }] },
+            { id: 202, images: [{ id: 900, src: "https://store.test/shared.jpg" }] },
+          ]),
+          { status: 200, headers: { "x-wp-totalpages": "1" } },
+        ),
+      ),
+    );
+    const adapter = new WooCommerceAdapter({
+      storeUrl: "https://store.test",
+      consumerKey: "consumer-key",
+      consumerSecret: "consumer-secret",
+    });
+
+    const sourceIds: string[] = [];
+    for await (const image of adapter.productImages()) {
+      sourceIds.push(image.normalized.sourceId);
+    }
+
+    expect(sourceIds).toEqual(["900", "900:202"]);
   });
 });
