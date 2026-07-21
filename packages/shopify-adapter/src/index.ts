@@ -70,6 +70,32 @@ export class ShopifyAdapter {
         (scope) => !grantedScopes.includes(scope),
       );
 
+      if (missingPermissions.length === 0) {
+        try {
+          await this.graphql(
+            `query StoreBridgeProtectedCustomerDataProbe {
+              customers(first: 1) {
+                nodes {
+                  id
+                  firstName
+                  lastName
+                  email
+                  phone
+                  defaultAddress { address1 address2 city province country zip phone }
+                }
+              }
+            }`,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (/not approved to access the Customer object|protected customer/i.test(message)) {
+            missingPermissions.push("protected_customer_data");
+          } else {
+            throw error;
+          }
+        }
+      }
+
       return {
         ok: missingPermissions.length === 0,
         status: missingPermissions.length ? "PERMISSION_MISSING" : "CONNECTED",
@@ -83,7 +109,11 @@ export class ShopifyAdapter {
           missingScopes: missingPermissions,
         },
         warnings: missingPermissions.length
-          ? ["Some Shopify scopes are missing."]
+          ? missingPermissions.includes("protected_customer_data")
+            ? [
+                "Shopify Protected Customer Data access is required for customers, addresses, and orders.",
+              ]
+            : ["Some Shopify scopes are missing."]
           : [],
         missingPermissions,
         responseTimeMs: Math.round(performance.now() - started),

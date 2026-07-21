@@ -16,6 +16,53 @@ function adapter() {
 }
 
 describe("Shopify 2026-07 compatibility", () => {
+  it("reports protected customer data as a missing permission", async () => {
+    const grantedScopes = [
+      "write_products",
+      "write_customers",
+      "write_orders",
+      "write_content",
+      "write_files",
+      "write_inventory",
+      "read_locations",
+      "write_online_store_navigation",
+    ].map((handle) => ({ handle }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        graphqlResponse({
+          shop: {
+            name: "Destination",
+            myshopifyDomain: "destination.myshopify.com",
+            currencyCode: "USD",
+            timezoneAbbreviation: "UTC",
+            plan: { displayName: "Development" },
+          },
+          appInstallation: { accessScopes: grantedScopes },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            errors: [
+              {
+                message:
+                  "This app is not approved to access the Customer object.",
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await adapter().testConnection();
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("PERMISSION_MISSING");
+    expect(result.missingPermissions).toContain("protected_customer_data");
+  });
+
   it("omits blank product money values from the default variant update", async () => {
     const fetchMock = vi
       .fn()
