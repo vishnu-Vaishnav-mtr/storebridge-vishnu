@@ -513,7 +513,7 @@ async function auditGenerator<T>(
   };
 }
 
-function normalizeWooOrder(order: Record<string, unknown>): NormalizedOrder {
+export function normalizeWooOrder(order: Record<string, unknown>): NormalizedOrder {
   const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
   const normalized: NormalizedOrder = {
     sourceId: String(order.id),
@@ -532,7 +532,20 @@ function normalizeWooOrder(order: Record<string, unknown>): NormalizedOrder {
         quantity: Number(item.quantity ?? 1),
       };
       if (typeof item.sku === "string") output.sku = item.sku;
-      if (typeof item.price === "string") output.price = item.price;
+      if (typeof item.price === "string" && item.price.trim()) {
+        output.price = item.price;
+      } else if (typeof item.price === "number" && Number.isFinite(item.price)) {
+        output.price = String(item.price);
+      } else if (
+        (typeof item.total === "string" || typeof item.total === "number") &&
+        Number.isFinite(Number(item.total)) &&
+        output.quantity > 0
+      ) {
+        // Woo exposes the actual discounted line total even when a plugin
+        // omits the unit price. Derive the real unit value instead of using a
+        // placeholder price.
+        output.price = String(Number(item.total) / output.quantity);
+      }
       if (item.product_id != null) output.productSourceId = String(item.product_id);
       if (item.variation_id != null && Number(item.variation_id) > 0)
         output.variantSourceId = String(item.variation_id);

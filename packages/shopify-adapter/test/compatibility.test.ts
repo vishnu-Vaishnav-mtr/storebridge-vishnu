@@ -287,14 +287,19 @@ describe("Shopify 2026-07 compatibility", () => {
   });
 
   it("uses the 2026-07 Admin API customer address payload", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      graphqlResponse({
-        customerAddressCreate: {
-          address: { id: "gid://shopify/MailingAddress/1" },
-          userErrors: [],
-        },
-      }),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        graphqlResponse({ customer: { addresses: [] } }),
+      )
+      .mockResolvedValueOnce(
+        graphqlResponse({
+          customerAddressCreate: {
+            address: { id: "gid://shopify/MailingAddress/1" },
+            userErrors: [],
+          },
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await adapter().upsertCustomerAddress(
@@ -314,7 +319,7 @@ describe("Shopify 2026-07 compatibility", () => {
     );
 
     expect(result.gid).toBe("gid://shopify/MailingAddress/1");
-    const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const request = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
     expect(request.query).toContain("address { id }");
     expect(request.variables.address).toMatchObject({
       countryCode: "IT",
@@ -322,5 +327,55 @@ describe("Shopify 2026-07 compatibility", () => {
     });
     expect(request.variables.address).not.toHaveProperty("country");
     expect(request.variables.address).not.toHaveProperty("province");
+  });
+
+  it("maps an identical shipping address to the existing customer address", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      graphqlResponse({
+        customer: {
+          addresses: [
+            {
+              id: "gid://shopify/MailingAddress/1",
+              firstName: "Ilaria",
+              lastName: "Grieco",
+              company: "",
+              address1: "Viale Gramsci",
+              address2: "",
+              city: "Bresso",
+              provinceCode: "MI",
+              countryCodeV2: "IT",
+              zip: "20991",
+              phone: "",
+            },
+          ],
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await adapter().upsertCustomerAddress(
+      {
+        sourceId: "1:shipping",
+        customerSourceId: "1",
+        firstName: "Ilaria",
+        lastName: "Grieco",
+        company: "",
+        address1: "Viale Gramsci",
+        address2: "",
+        city: "Bresso",
+        province: "MI",
+        country: "IT",
+        zip: "20991",
+        phone: "",
+      },
+      "gid://shopify/Customer/1",
+      "1:shipping",
+    );
+
+    expect(result).toEqual({
+      gid: "gid://shopify/MailingAddress/1",
+      duplicatePrevented: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

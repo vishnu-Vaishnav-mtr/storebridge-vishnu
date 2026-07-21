@@ -589,6 +589,8 @@ export class ShopifyAdapter {
     customerGid: string,
     _sourceId: string,
   ): Promise<{ gid: string; duplicatePrevented: boolean }> {
+    const existing = await this.findCustomerAddress(customerGid, address);
+    if (existing) return { gid: existing, duplicatePrevented: true };
     const response = await this.graphql<{
       customerAddressCreate: {
         address: { id: string } | null;
@@ -608,6 +610,42 @@ export class ShopifyAdapter {
     const gid = response.customerAddressCreate.address?.id;
     if (!gid) throw new Error("Shopify did not return a customer address ID.");
     return { gid, duplicatePrevented: false };
+  }
+
+  private async findCustomerAddress(
+    customerGid: string,
+    address: NormalizedAddress,
+  ): Promise<string | null> {
+    const response = await this.graphql<{
+      customer: {
+        addresses: Array<{
+          id: string;
+          firstName: string | null;
+          lastName: string | null;
+          company: string | null;
+          address1: string | null;
+          address2: string | null;
+          city: string | null;
+          provinceCode: string | null;
+          countryCodeV2: string | null;
+          zip: string | null;
+          phone: string | null;
+        }>;
+      } | null;
+    }>(
+      `query StoreBridgeCustomerAddresses($id: ID!) {
+        customer(id: $id) {
+          addresses {
+            id firstName lastName company address1 address2 city
+            provinceCode countryCodeV2 zip phone
+          }
+        }
+      }`,
+      { id: customerGid },
+    );
+    return response.customer?.addresses.find((candidate) =>
+      sameAddress(candidate, address),
+    )?.id ?? null;
   }
 
   async createHistoricalOrder(
@@ -1160,6 +1198,37 @@ function addressInput(address: NormalizedAddress) {
 function withDefined<T extends Record<string, unknown>>(input: T) {
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined),
+  );
+}
+
+function sameAddress(
+  candidate: {
+    firstName: string | null;
+    lastName: string | null;
+    company: string | null;
+    address1: string | null;
+    address2: string | null;
+    city: string | null;
+    provinceCode: string | null;
+    countryCodeV2: string | null;
+    zip: string | null;
+    phone: string | null;
+  },
+  address: NormalizedAddress,
+) {
+  const normalize = (value: string | null | undefined) =>
+    (value ?? "").trim().toLowerCase();
+  return (
+    normalize(candidate.firstName) === normalize(address.firstName) &&
+    normalize(candidate.lastName) === normalize(address.lastName) &&
+    normalize(candidate.company) === normalize(address.company) &&
+    normalize(candidate.address1) === normalize(address.address1) &&
+    normalize(candidate.address2) === normalize(address.address2) &&
+    normalize(candidate.city) === normalize(address.city) &&
+    normalize(candidate.provinceCode) === normalize(address.province) &&
+    normalize(candidate.countryCodeV2) === normalize(address.country) &&
+    normalize(candidate.zip) === normalize(address.zip) &&
+    normalize(candidate.phone) === normalize(address.phone)
   );
 }
 
