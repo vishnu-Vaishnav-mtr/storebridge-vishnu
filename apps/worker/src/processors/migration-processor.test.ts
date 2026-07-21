@@ -257,6 +257,32 @@ describe("migration processor pipeline", () => {
     );
   });
 
+  it("accepts two source records that resolve to the same destination resource", async () => {
+    const store = fakeStore();
+    store.upsertMapping = vi.fn(async () => {
+      throw new Error(
+        "Unique constraint failed on the fields: (`migrationId`,`entityType`,`destinationGid`)",
+      );
+    });
+    const shopify = fakeShopify(async () => ({
+      gid: "gid://shopify/MailingAddress/existing",
+      duplicatePrevented: true,
+    }));
+
+    await runMigrationPipeline({
+      migrationId: "migration-1",
+      definitions: [productDefinition([{ sourceId: "shipping-101", title: "Same address" }])],
+      shopify: shopify as never,
+      store: store as never,
+    });
+
+    expect(store.records.get("PRODUCT:shipping-101")).toMatchObject({
+      status: "DUPLICATE_PREVENTED",
+      destinationGid: "gid://shopify/MailingAddress/existing",
+    });
+    expect(store.errors).toHaveLength(0);
+  });
+
   it("updates Shopify when a previously mapped source record has changed", async () => {
     const store = fakeStore();
     store.mappings.set("PRODUCT:woo-101", "gid://shopify/Product/existing");

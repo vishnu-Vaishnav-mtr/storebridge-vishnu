@@ -428,12 +428,25 @@ export async function runMigrationPipeline(input: {
           destinationGid: result.gid,
           normalizedData: mappedRecord,
         });
-        await input.store.upsertMapping({
-          entityType: definition.entityType,
-          sourceId,
-          sourceHash: source.hash,
-          destinationGid: result.gid,
-        });
+        try {
+          await input.store.upsertMapping({
+            entityType: definition.entityType,
+            sourceId,
+            sourceHash: source.hash,
+            destinationGid: result.gid,
+          });
+        } catch (error) {
+          // Billing and shipping can legitimately be the same Shopify address.
+          // Keep the second source record as duplicate-prevented without a
+          // second EntityMapping row when the destination uniqueness guard
+          // detects this many-to-one relationship.
+          if (
+            !result.duplicatePrevented ||
+            !isDestinationMappingConflict(error)
+          ) {
+            throw error;
+          }
+        }
         await input.store.updateMigrationCounters({
           processed: 1,
           duplicate: result.duplicatePrevented ? 1 : 0,
@@ -671,8 +684,27 @@ async function retryFailed(migration: MigrationWithConnections) {
   for (const error of errors) {
     if (!error.entityType || !error.sourceId) continue;
     const mapping = await store.findMapping(error.entityType, error.sourceId);
-    if (mapping) await store.resolveError(error.id);
-    else await store.touchError(error.id, "Retry attempted but the record is still failed.");
+    const record = mapping
+      ? null
+      : await prisma.migrationRecord.findUnique({
+          where: {
+            migrationId_entityType_sourceId: {
+              migrationId: migration.id,
+              entityType: error.entityType,
+              sourceId: error.sourceId,
+            },
+          },
+          select: { status: true, destinationGid: true },
+        });
+    if (
+      mapping ||
+      (record?.destinationGid &&
+        ["CREATED", "UPDATED", "DUPLICATE_PREVENTED"].includes(record.status))
+    ) {
+      await store.resolveError(error.id);
+    } else {
+      await store.touchError(error.id, "Retry attempted but the record is still failed.");
+    }
   }
 
   const recordCounts = await prisma.migrationRecord.groupBy({
@@ -720,6 +752,11 @@ async function verifyMigration(
     string,
     { entity: string; source: number; migrated: number; updated: number; skipped: number; failed: number }
   >();
+  const mappedSources = new Set(
+    migration.mappings.map(
+      (mapping) => `${mapping.entityType}:${mapping.sourceId}`,
+    ),
+  );
 
   for (const audit of migration.auditResults) {
     if (!enabled.has(audit.entityType)) continue;
@@ -740,6 +777,14 @@ async function verifyMigration(
       { entity: record.entityType, source: 0, migrated: 0, updated: 0, skipped: 0, failed: 0 };
     if (record.status === "SKIPPED") row.skipped += 1;
     if (record.status === "FAILED") row.failed += 1;
+    if (
+      record.status === "DUPLICATE_PREVENTED" &&
+      record.destinationGid &&
+      !mappedSources.has(`${record.entityType}:${record.sourceId}`)
+    ) {
+      if (await shopify.resourceExists(record.destinationGid)) row.migrated += 1;
+      else row.failed += 1;
+    }
     rows.set(record.entityType, row);
   }
 
@@ -1409,6 +1454,16 @@ function assertRealShopifyGid(gid: string) {
 
 function retryKeyFor(entityType: EntityType, sourceId: string) {
   return `${entityType}:${sourceId}`;
+}
+
+function isDestinationMappingConflict(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /unique constraint failed/i.test(message) &&
+    /migrationId/i.test(message) &&
+    /entityType/i.test(message) &&
+    /destinationGid/i.test(message)
+  );
 }
 
 function withDefined<T extends Record<string, unknown>>(input: T) {
